@@ -11,6 +11,12 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
+careerops:
+  collector:
+    alio:
+      api-key: ${JOB_ALIO_API_KEY:}
+      base-url: https://opendata.alio.go.kr/new/v1/recruit
+
 management:
   endpoints:
     web:

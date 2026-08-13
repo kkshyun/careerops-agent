@@ -31,13 +31,22 @@
 | `started_at` | string (ISO 8601) | 이 phase 시작 시각 |
 | `completed_at` | string (ISO 8601) \| null | 이 phase 종료 시각, 진행 중이면 null |
 | `duration` | number \| null | 초 단위, `completed_at` - `started_at` |
-| `codex_invocation_count` | number | 해당 task에서 Codex를 호출한 누적 횟수 (`codex` + `codex-reply` 합산) |
-| `review_round_count` | number | 누적 리뷰 라운드 수 |
-| `first_review_pass` | boolean \| null | 1차 리뷰에서 바로 통과했는지. 아직 리뷰 전이면 null |
+| `codex_invocation_count` | number | 해당 task에서 Codex를 호출한 누적 횟수 (`codex` + `codex-reply` 합산). 아래 세 필드를 전부 합친 raw 총합이다 |
+| `implementation_blocker_count` | number | **(JOB-001부터)** formal review 이전, 구현 단계에서 Codex가 "추측하지 않고 진행을 멈춘" 실제 blocker 보고 횟수(예: 프레임워크/라이브러리 버전 비호환으로 스스로 판단할 수 없어 Tech Lead 결정을 요청한 경우). 버그를 고치는 일반적인 재작업과 구분하기 위한 필드 — Codex가 "막혀서 못 간다"고 명시적으로 멈춘 경우만 센다 |
+| `implementation_revision_count` | number | **(JOB-001부터)** 최초 구현 호출(`codex`) 이후, formal review가 시작되기 전까지 발생한 추가 Codex 호출(`codex-reply`) 횟수. blocker 해결 요청뿐 아니라 review 없이 Claude가 선제적으로 요청한 수정도 포함한다. `implementation_blocker_count`의 상위 집합 — 모든 blocker 해결에는 revision이 최소 1회 필요하지만, blocker 없이도 revision이 있을 수 있다(둘이 항상 같은 값은 아니다) |
+| `review_round_count` | number | 누적 **formal review** 라운드 수(reviewer subagent가 실제로 판정을 내린 횟수). `implementation_revision_count`와 달리, review가 한 번이라도 시작된 이후의 수정 왕복만 여기 반영된다 |
+| `first_review_pass` | boolean \| null | 1차 **formal review**에서 바로 통과했는지(수정 요청 없이 PASS). 구현 단계의 blocker/revision 여부와는 무관 — blocker가 여러 번 있었어도 review 자체가 1차에 통과하면 true. 아직 리뷰 전이면 null |
 | `test_count` | number \| null | 실행된 테스트 수 |
 | `test_pass_count` | number \| null | 통과한 테스트 수 |
 | `human_revision_required` | boolean | 사람(사용자)이 직접 수정 개입했는지 |
 | `status` | string | `in_progress` \| `blocked` \| `passed` \| `failed` \| `abandoned` |
+
+**필드 관계식(참고용, 강제 검증하지 않음)**: 대략
+`codex_invocation_count ≈ 1(최초 구현) + implementation_revision_count + (review 라운드 중 발생한 재구현 호출 수)`.
+`implementation_blocker_count`와 `implementation_revision_count`가 같은 값일
+수 있지만(예: JOB-001은 3/3 — blocker마다 정확히 revision 1회씩으로 해결됨),
+개념적으로는 다르다: blocker는 "Codex가 멈추고 판단을 요청한 사건", revision은
+"그 사건이든 아니든 review 전에 발생한 재구현 호출 자체"다.
 
 ### 예시
 
@@ -46,6 +55,12 @@
 {"task_id":"CO-0001","phase":"implement","planned_by":"claude","implemented_by":"codex","started_at":"2026-08-13T10:20:00+09:00","completed_at":"2026-08-13T10:45:00+09:00","duration":1500,"codex_invocation_count":1,"review_round_count":0,"first_review_pass":null,"test_count":6,"test_pass_count":6,"human_revision_required":false,"status":"in_progress"}
 {"task_id":"CO-0001","phase":"review","planned_by":"claude","implemented_by":"codex","started_at":"2026-08-13T10:45:00+09:00","completed_at":"2026-08-13T10:50:00+09:00","duration":300,"codex_invocation_count":1,"review_round_count":1,"first_review_pass":true,"test_count":6,"test_pass_count":6,"human_revision_required":false,"status":"passed"}
 ```
+
+`implementation_blocker_count`/`implementation_revision_count`는 JOB-001부터
+기록한다. CO-0001(위 예시)처럼 이 필드 도입 이전 항목은 필드 자체가 없다 —
+과거 줄을 다시 써서 채워 넣지 않는다(값을 사실로 확인할 수 있는 경우에
+한해 예외적으로 뒤에 보완 줄을 추가할 수 있다. `.ai/metrics/metrics.jsonl`의
+JOB-001 항목 참고).
 
 누가/언제 기록하는지는 `codex-implement` Skill과 `reviewer` subagent 절차에
 포함되어 있다 (여기서는 스키마만 정의).
@@ -72,9 +87,28 @@ Spring Boot Actuator `/actuator/prometheus`를 통해 노출한다(CORE-001에�
 Prometheus label cardinality가 무한정 늘어날 위험이 있다. 출처가 고정된
 값 집합(enum 등)으로 정리되는 시점에 재검토한다.
 
+**Collector (COLLECT-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_collector_run_total` | `careerops.collector.run` | Counter | `source`, `result`=`success`\|`failed` | 수집 실행(수동 트리거 1회, `POST /api/collect/{source}`) 자체의 성공/실패 분포. `failed`는 외부 API 호출/응답 파싱 자체가 실패해 수집이 중단된 경우(개별 item의 `invalid_item` 실패는 포함하지 않음 — 그 경우 run은 `success`로 집계됨) | `AlioCollectorService` — 실행 종료 시점 |
+| `careerops_collector_fetched_total` | `careerops.collector.fetched` | Counter | `source` | 외부 API로부터 수신한 원본 항목(item) 수 누적(저장 여부 무관) | `AlioCollectorService` — 응답 수신 직후 |
+| `careerops_collector_saved_total` | `careerops.collector.saved` | Counter | `source` | **이 collector 실행으로 새로 저장된** `JobPosting` 수 누적(중복 skip, 필수 필드 누락은 제외) | `AlioCollectorService` — 개별 저장 성공 시 |
+| `careerops_collector_failed_total` | `careerops.collector.failed` | Counter | `source`, `reason`=`fetch_error`\|`parse_error`\|`invalid_item` | 실패 유형별 분포. `reason`은 고정된 소수의 enum만 사용 — raw exception message를 태그로 넣지 않는다(cardinality 제한) | `AlioCollectorService` — 실패 지점별 |
+
+`source` 값은 현재 `"alio"` 하나뿐이라 cardinality 문제가 없다(향후 Source가
+늘어나도 고정된 소스 이름 집합이므로 자유 문자열 입력인 `JobPosting.source`와
+달리 계속 태그로 사용 가능하다고 판단).
+
+**`careerops_job_creation_total`(JOB-001)과의 관계**: `careerops_job_creation_total`은
+저장 경로(수동 `POST /api/jobs` + collector 등 모든 경로)를 합친 전체 누적
+저장 건수다. `careerops_collector_saved_total`은 그중 **이 collector 실행이
+기여한 몫만** 별도로 센다 — collector가 저장에 성공하면 두 카운터가 함께
+증가한다(겹침, 의도된 것). 전자는 "총 저장량", 후자는 "이 수집기의 기여도/
+효과"를 보기 위한 것으로 관측 목적이 다르다.
+
 ### 예정 (미구현, 관련 기능 Task에서 정의)
 
-- 채용공고 수집 성공률
 - 중복 공고 제거율
 - 추천 Top-K 적합도
 - 카카오톡 알림 성공률

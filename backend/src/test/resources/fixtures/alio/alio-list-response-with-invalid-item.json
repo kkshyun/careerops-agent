@@ -1,0 +1,27 @@
+{
+  "result": [
+    {
+        "instNm": "합성 공공기관 C",
+        "recrutPbancTtl": "정보보안 신입 채용",
+        "srcUrl": "https://example.invalid/alio/2001",
+        "recrutPblntSn": 2001,
+        "pbancBgngYmd": "20260901",
+        "pbancEndYmd": "20260915",
+        "recrutSeNm": "신입",
+        "ncsCdNmLst": "정보보안",
+        "workRgnNmLst": "대전"
+    },
+    {
+        "instNm": "",
+        "recrutPbancTtl": "기관명 누락 합성 항목",
+        "recrutPblntSn": 2002
+    },
+    {
+        "instNm": "합성 공공기관 D",
+        "recrutPblntSn": 2003
+    }
+  ],
+  "resultCode": "200",
+  "resultMsg": "성공했습니다.",
+  "totalCount": 3
+}

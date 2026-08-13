@@ -83,6 +83,13 @@ Codex는 이 저장소의 `AGENTS.md`를 읽을 수 있으므로 전체 원칙�
 - `review_round_count`는 reviewer subagent 호출 누적 횟수다.
 - `first_review_pass`는 review_round_count가 1일 때 PASS면 true, 아니면
   false. 2라운드 이상 진행됐다면 항상 false로 고정된다(이후 줄에서도).
+- `implementation_blocker_count`/`implementation_revision_count`(JOB-001부터):
+  formal review(reviewer subagent 호출)가 시작되기 **전**, 구현 단계에서
+  Codex가 명시적으로 "막혔다"고 보고한 횟수와 그 사이 발생한 `codex-reply`
+  호출 횟수를 각각 센다. review가 시작된 뒤의 수정 왕복은 이 두 필드가
+  아니라 `review_round_count`로 카운트한다(스키마 정의는 `docs/METRICS.md`
+  참고). 구현 단계에서 blocker/revision이 아예 없었다면 둘 다 0으로
+  명시적으로 기록한다(null로 남기지 않는다).
 - `human_revision_required`는 사용자가 직접 코드를 고치거나 명세를
   바꿔야 했다면 true.
 

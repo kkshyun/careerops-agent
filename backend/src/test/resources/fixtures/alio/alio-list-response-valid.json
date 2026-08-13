@@ -1,0 +1,33 @@
+{
+  "result": [
+    {
+        "instNm": "합성 공공기관 A",
+        "recrutPbancTtl": "2026년 전산직 신입 채용",
+        "srcUrl": "https://example.invalid/alio/1001",
+        "recrutPblntSn": 1001,
+        "pbancBgngYmd": "20260801",
+        "pbancEndYmd": "20260820",
+        "recrutSeNm": "신입",
+        "ncsCdNmLst": "정보기술",
+        "workRgnNmLst": "서울",
+        "files": [],
+        "steps": []
+    },
+    {
+        "instNm": "합성 공공기관 B",
+        "recrutPbancTtl": "디지털 직무 공개채용",
+        "srcUrl": "https://example.invalid/alio/1002",
+        "recrutPblntSn": 1002,
+        "pbancBgngYmd": "20260805",
+        "pbancEndYmd": "20260831",
+        "recrutSeNm": "공개경쟁",
+        "ncsCdNmLst": "사업관리,정보기술",
+        "workRgnNmLst": "부산",
+        "files": [],
+        "steps": []
+    }
+  ],
+  "resultCode": 200,
+  "resultMsg": "성공했습니다.",
+  "totalCount": 2
+}
