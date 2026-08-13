@@ -37,6 +37,16 @@ description: Task 명세(.ai/tasks/CO-XXXX-*.md)를 Codex MCP(mcp__codex__codex,
   Task 명세의 `codex_thread_id`와 새 `prompt`를 넘긴다.
 - Task 명세의 `codex_invocation_count`를 1 증가시키고 metrics에 반영한다.
 
+## 2.5. Codex에게 시키지 않는 것
+
+- **`.ai/metrics/metrics.jsonl` 기록은 항상 Claude(오케스트레이터)가 리뷰 결과를
+  반영해서 남긴다.** Codex 프롬프트에서 이 파일을 직접 수정하라고 지시하지
+  않는다. Codex가 자기 결과를 스스로 "passed"로 self-report해 append하면
+  리뷰 게이트를 우회하는 셈이 된다 (CORE-001 1차 리뷰에서 실제 발생한 문제 —
+  `.ai/reviews/CORE-001-review-1.md` 참고). Codex의 결과는 어디까지나
+  텍스트 보고로만 받고, metrics 반영은 이 Skill의 "5. Metrics 기록 규칙"에
+  따라 별도로 한다.
+
 ## 3. Codex 프롬프트 구성
 
 Codex는 이 저장소의 `AGENTS.md`를 읽을 수 있으므로 전체 원칙을 다시

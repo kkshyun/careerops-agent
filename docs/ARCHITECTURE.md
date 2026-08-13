@@ -11,10 +11,11 @@
 
 **Backend**
 - Java 21
-- Spring Boot
+- Spring Boot 4.1.x (Spring Framework 7 / Jakarta EE 11, ADR-0004)
+- Build Tool: Gradle (Groovy DSL, ADR-0005)
 - Spring Data JPA
-- PostgreSQL
-- Redis
+- PostgreSQL 18.x (Docker: `postgres:18-alpine`)
+- Redis 8.x (Docker: `redis:8-alpine`)
 
 **Frontend**
 - Next.js
