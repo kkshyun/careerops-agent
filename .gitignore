@@ -1,0 +1,32 @@
+# Secrets — 절대 커밋하지 않는다
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+**/application-local.yml
+**/application-secrets.yml
+
+# Java / Gradle / Maven
+target/
+build/
+.gradle/
+*.class
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Docker
+docker-compose.override.yml
+
+# OS / Editor
+.DS_Store
+.idea/
+*.iml
+.vscode/
+
+# Claude Code local settings (팀 공용 설정과 분리)
+.claude/settings.local.json
