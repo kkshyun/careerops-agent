@@ -11,6 +11,7 @@
 target/
 build/
 .gradle/
+.gradle-user-home/
 *.class
 
 # Node / Next.js

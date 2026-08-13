@@ -171,3 +171,61 @@ Java 21과 호환되므로 지원 기간이 더 긴 4.1.x를 선택한다.
 **영향**: `backend/gradlew`, `gradlew.bat`, `gradle/wrapper/*`를 커밋해
 Gradle 버전을 고정한다. 이후 프로젝트가 멀티모듈(예: backend 내 여러
 모듈)로 커진다면 Gradle의 멀티모듈 구성을 그대로 확장한다.
+
+---
+
+## ADR-0006: DB Schema 관리 전략 — Flyway 채택 (Hibernate `ddl-auto` 대신)
+
+- 날짜: 2026-08-13
+- 상태: 확정
+- 관련 Task: JOB-001
+
+**문제**: JOB-001부터 첫 실제 도메인 테이블(`job_postings`)이 생긴다.
+CORE-001에서는 `@Entity`가 하나도 없어 `ddl-auto=none`으로 충분했지만,
+이제부터는 스키마를 실제로 어떻게 만들고 변경 이력을 관리할지 정해야
+한다. CareerOps는 앞으로 여러 채용공고 소스(JOB-ALIO, 기업 공식 사이트,
+금융사 공식 사이트)를 연결할 예정이라, 데이터가 계속 쌓이는 동시에
+스키마 변경(컬럼 추가/조정)도 반복적으로 일어날 것으로 예상된다.
+
+**결정**: **Flyway**(`flyway-core` + `flyway-database-postgresql`)를
+도입해 모든 스키마 변경을 버전 관리되는 SQL 마이그레이션 파일
+(`backend/src/main/resources/db/migration/V{n}__description.sql`)로
+관리한다. `spring.jpa.hibernate.ddl-auto`는 `validate`로 설정해, Hibernate가
+entity 매핑과 실제(Flyway가 만든) 스키마가 일치하는지 기동 시 검증만 하고
+스스로 스키마를 바꾸지 않게 한다.
+
+**대안**:
+- `ddl-auto=update` — 기각. 매 기동 시 Hibernate가 엔티티 기준으로
+  스키마를 추론해 변경한다. 개발 초기엔 편하지만 (1) 실제 실행된 변경의
+  이력이 남지 않아 "언제 어떤 컬럼이 왜 추가/변경됐는지" 추적이 안 되고,
+  (2) 컬럼 삭제·타입 변경·rename 같은 케이스를 안전하게 처리하지 못해
+  실수로 데이터 손실 위험이 있으며, (3) 여러 소스를 붙이며 스키마가 자주
+  바뀔 CareerOps 특성상 데이터가 쌓인 뒤에 결국 마이그레이션 도구로
+  전환하게 될 가능성이 높다. "지금 당장 데이터가 적으니 괜찮다"는 이유로
+  미루면, 이후 Task마다 같은 리스크가 반복 누적된다.
+- `ddl-auto=none` + 수동 SQL 실행 — 기각. 버전 관리도 자동화도 없어
+  "누가 로컬/운영 DB에 무엇을 언제 실행했는지"가 사람 기억에 의존한다.
+  Claude(설계)/Codex(구현)/사용자가 함께 다루는 환경에서 재현성이 떨어진다.
+- Liquibase — 기각. Flyway보다 XML/YAML/JSON 기반 changelog가 상대적으로
+  복잡하다. 이 프로젝트 규모에서는 SQL-first인 Flyway가 더 단순하고,
+  Codex가 마이그레이션을 생성/Claude가 리뷰하기에도 plain SQL이 더
+  직관적이다.
+- 지금은 아무 도구도 쓰지 않고 필요해지면 그때 도입 — 기각. 이번이
+  처음으로 실제 테이블이 생기는 시점이다. `ddl-auto`로 스키마를 몇 차례
+  자동 변경한 뒤 나중에 Flyway로 전환하면, 기존 스키마와 첫 baseline
+  마이그레이션을 맞추는 추가 작업이 필요해진다. 처음부터 Flyway로
+  시작하면 이 비용이 없다.
+
+**이유**: "최신/유명해서"가 아니라 CareerOps가 계속 쌓이는 채용공고
+데이터를 다루고, 소스가 늘어날수록 스키마 변경 빈도가 늘어난다는 이
+프로젝트의 구체적 특성에 근거한다. 스키마 변경이 파일로 남고 리뷰
+가능해야, Claude-Codex 협업 흐름에서 "무엇이 왜 바뀌었는지"를 코드
+리뷰처럼 검증할 수 있다.
+
+**영향**: 매 스키마 변경마다 마이그레이션 SQL 파일을 새로 추가해야 한다
+(자동 생성이 아니라 수기 작성). `ddl-auto=validate`이므로 엔티티와 실제
+스키마가 어긋나면 애플리케이션 기동이 즉시 실패한다(조기 오류 탐지 장점이자
+트레이드오프 — 마이그레이션 작성을 빠뜨리면 앱이 아예 뜨지 않는다). 신규
+dependency 2개(`flyway-core`, `flyway-database-postgresql`)가 추가되지만,
+`build.gradle`의 Spring Boot dependency management(BOM)가 버전을 관리하므로
+버전 명시는 불필요하다.

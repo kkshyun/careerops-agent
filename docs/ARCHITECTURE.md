@@ -2,10 +2,13 @@
 
 ## 현재 상태
 
-**Phase 0.** 아직 애플리케이션 코드는 없다. 이 문서는 예정 기술 스택과
-설계 원칙, 앞으로 구조가 잡히면 채워질 항목의 자리를 표시한다. 실제 모듈
-구조/API 설계는 각 기능의 Task 명세(`.ai/tasks/`)와 함께 구체화되고, 이
-문서에도 반영된다.
+**Phase 2 진행 중.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
+추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
+(feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
+계층형 최상위 패키지로는 나누지 않는다 — 이유는 각 도메인 Task 명세
+참고). 실제 모듈 구조/API 설계는 각 기능의 Task 명세(`.ai/tasks/`)와 함께
+구체화되고, 이 문서에도 반영된다.
 
 ## 예정 기술 스택
 
@@ -16,6 +19,7 @@
 - Spring Data JPA
 - PostgreSQL 18.x (Docker: `postgres:18-alpine`)
 - Redis 8.x (Docker: `redis:8-alpine`)
+- Flyway (DB schema migration, ADR-0006 — JOB-001부터)
 
 **Frontend**
 - Next.js
@@ -60,7 +64,10 @@
   경험 검색 → Evidence Sheet → 초안 → Fact Check → Style Check.
 - **Metrics/Observability**: 개발 프로세스 지표 + 제품 지표.
 
-이 도메인들은 아직 코드로 구현되지 않았다. Phase 1 이후 순서는
+위 도메인 중 **채용공고 수집(Job Ingestion)**은 JOB-001에서 최소 저장/조회
+범위로 처음 코드화되기 시작했다(`backend/src/main/java/com/careerops/backend/job/`).
+단, JOB-001은 저장/조회만 다루고 실제 수집(크롤링)·중복 제거·정규화는
+아직 포함하지 않는다. 나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
 
 ## 시스템 구성 (개략, 미확정)
