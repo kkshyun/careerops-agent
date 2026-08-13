@@ -107,6 +107,29 @@ Prometheus label cardinality가 무한정 늘어날 위험이 있다. 출처가 
 증가한다(겹침, 의도된 것). 전자는 "총 저장량", 후자는 "이 수집기의 기여도/
 효과"를 보기 위한 것으로 관측 목적이 다르다.
 
+**Manual Job Import (IMPORT-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_manual_import_total` | `careerops.manual.import` | Counter | `result`=`saved`\|`duplicate` | 사용자가 URL로 수동 등록(`POST /api/import/jobs/manual`)한 결과 분포 | `ManualImportService` — 저장/중복 판정 직후 |
+
+`invalid`(입력 검증 실패)는 태그 값으로 쓰지 않는다 — 검증이 Bean
+Validation(`@Valid`)으로 Controller 진입 전에 처리돼 계측 지점을 추가하려면
+전용 예외 처리 계층(`@ControllerAdvice` 등)을 새로 들여야 하고, 이는
+JOB-001/COLLECT-001이 유지해온 "공통 예외 처리 계층을 만들지 않는다"는
+원칙과 충돌한다. metric 개수보다 정확성이 우선이라는 원칙에 따라 이번엔
+`saved`/`duplicate`만 계측한다(`.ai/tasks/IMPORT-001.md` Technical Notes
+참고).
+
+**`careerops_job_creation_total`과의 관계**: `ManualImportService`는 신규
+저장(`result=saved`)일 때만 기존 `JobPostingService.create()`를 호출하고,
+`duplicate`일 때는 호출하지 않는다 — 따라서 `careerops_job_creation_total`은
+`careerops_manual_import_total{result="saved"}`가 증가할 때만 함께
+증가하고, `result="duplicate"`일 때는 증가하지 않는다. 두 카운터가 항상
+같은 방향으로 움직이도록 구현 경로 자체(`JobPostingService.create()`를
+반드시 거침)로 강제한 것이며, COLLECT-001의 `careerops_collector_saved_total`과
+동일한 설계 원칙이다.
+
 ### 예정 (미구현, 관련 기능 Task에서 정의)
 
 - 중복 공고 제거율

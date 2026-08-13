@@ -110,9 +110,14 @@ COLLECT-001부터 첫 실제 외부 Source(ALIO 개방데이터 — `opendata.al
 `.ai/tasks/COLLECT-001.md` "정정 이력" 참고)를 연결하는 코드가
 `backend/src/main/java/com/careerops/backend/collector/`에 추가된다(외부
 API 호출 → 소스별 DTO → `JobPosting` 매핑 → 저장, 수동 트리거만 지원 —
-Scheduler·cross-source dedup·웹 크롤링은 아직 없음). 나머지 도메인은 아직
-코드로 구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을
-받아 정한다.
+Scheduler·cross-source dedup·웹 크롤링은 아직 없음). IMPORT-001부터는
+자동 Source에 없는 공고를 사용자가 URL과 최소 정보를 직접 입력해 등록하는
+`com.careerops.backend.manualimport`(`POST /api/import/jobs/manual`,
+`source="MANUAL"` 서버 강제, URL 접속 없이 형식 검증만)가 추가된다 — 서버가
+임의 URL에 접속하는 기능(HTTP GET/크롤링/JS 렌더링, SSRF 방어 포함)은
+아직 없고, 그 판단 근거는 `docs/DECISIONS.md` ADR-0008 참고. 나머지
+도메인은 아직 코드로 구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서
+사용자 승인을 받아 정한다.
 
 ## 시스템 구성 (개략, 미확정)
 
