@@ -507,3 +507,130 @@ Compose Postgres 사용, Testcontainers는 아직 아님")과도 상충하지 �
 override가 생기므로, 이후 테스트 관련 설정을 바꾸는 사람은 이 override가
 `.env`의 `SPRING_DATASOURCE_URL`보다 우선한다는 점을 인지해야 한다(설정
 파일이 아니라 Gradle test task 환경변수이기 때문에 가능한 override다).
+
+---
+
+## ADR-0011: ALIO 자동 수집 Scheduler — `fixedDelay` + 별도 metric 네임스페이스, 분산 락 미도입
+
+- 날짜: 2026-08-15
+- 상태: 확정
+- 관련 Task: COLLECT-003
+
+**문제**: COLLECT-001/002로 완성된 ALIO 수집(`AlioCollectorService.collect(int)`)은
+`POST /api/collect/alio`로 사람이 직접 호출해야만 실행된다. 이를 주기적으로
+자동 실행하되, (1) 기존 수집 로직/수동 API를 변경·중복 구현하지 않고,
+(2) 단일 인스턴스 MVP에 맞는 최소한의 동시 실행 방지만 두고, (3) 외부 API
+장애가 애플리케이션 전체나 다음 스케줄 실행에 영향을 주지 않으며, (4)
+사람 개입 없이도 실행 상태(횟수/성공·실패/fetched/saved/skipped/updated/
+실행시간)를 관측할 수 있어야 한다.
+
+**결정**:
+
+1. **`fixedDelay` 채택(`fixedRate`/cron 대신)** — 신규 `AlioCollectionScheduler`가
+   `@Scheduled(initialDelayString="${careerops.scheduler.alio.initial-delay:PT1M}",
+   fixedDelayString="${careerops.scheduler.alio.fixed-delay:PT6H}")`로
+   `alioCollectorService.collect(numOfRows)`를 그대로 호출한다.
+   `AlioCollectorService`/`CollectController`/`CollectResult`는 전혀
+   수정하지 않는다.
+2. **주기 기본값 6시간**, 설정(`careerops.scheduler.alio.fixed-delay`)으로
+   변경 가능. 공공기관 채용공고는 게시/마감 상태 변경이 하루 단위로도
+   드물고, 아직 알림 기능이 없어 실시간성 요구가 낮다. 급한 재수집은
+   기존 수동 API로 가능하므로 자동 주기는 보수적으로 잡아 외부 API 부담을
+   줄인다.
+3. **동시 실행 방지에 별도 락을 두지 않는다** — `fixedDelay`는 "이전 실행이
+   끝난 뒤 delay만큼 지나야 다음 실행을 스케줄"하는 것이 Spring의 기본
+   동작이라, 단일 인스턴스에서는 이것만으로 겹침이 발생하지 않는다.
+4. **예외를 Scheduler 내부에서 흡수**한다 — `AlioApiException`/예상 못한
+   `RuntimeException`을 catch해 WARN 로그 + `careerops.scheduler.alio.run
+   {result=failure}` metric만 남기고 밖으로 던지지 않는다(재시도 프레임워크
+   없이, 다음 스케줄 실행이 사실상 재시도 역할을 한다).
+5. **신규 metric은 `careerops.scheduler.alio.*` 별도 네임스페이스**로
+   추가한다(`run`/`duration`/`fetched`/`saved`/`skipped`/`updated`/`failed`).
+   기존 `careerops.collector.*`(COLLECT-001)에 `trigger` 같은 태그를
+   덧붙이는 대신 완전히 분리된 Counter/Timer를 새로 만든다.
+
+**대안**:
+- **`fixedRate` 또는 cron 표현식** — 기각. `fixedRate`는 이전 실행이 API
+  응답 지연 등으로 오래 걸리면 다음 실행과 겹칠 수 있어 별도 락이
+  필요해진다. cron은 특정 시각 정렬(예: 매일 새벽 실행)이 필요할 때
+  유리하지만, ALIO는 시간대별 트래픽 제약이 없는 공공 API라 그 이점이
+  없고 `fixedDelay`보다 개념이 복잡하다.
+- **ShedLock 등 분산 락 도입** — 기각(이번 시점). 현재 단일 인스턴스
+  MVP이고, `fixedDelay` 자체로 단일 인스턴스 내 겹침 방지가 충분하다.
+  다중 인스턴스로 확장하는 시점에는 인스턴스 간 겹침을 막을 별도 조율
+  수단(ShedLock, DB advisory lock 등)이 반드시 필요하다 — **이번 Task
+  범위에서는 구현하지 않고 이 ADR에 향후 고려사항으로만 남긴다.**
+- **Spring Retry 등 재시도 프레임워크 도입** — 기각. 개별 실행 실패는
+  다음 스케줄 실행(최대 6시간 뒤)이 사실상 재시도 역할을 하고, ALIO
+  장애가 몇 분 내 복구되는 일시적 문제라면 다음 실행에서 자연히
+  해소된다. 별도 backoff/재시도 정책을 지금 설계할 근거(장애 패턴 데이터)가
+  없다.
+- **기존 `careerops.collector.run`에 `trigger=manual|scheduled` 태그
+  추가** — 기각. 기존 Counter의 태그 집합을 바꾸면 이미 있는
+  `CollectControllerTest`의 metric assertion이 깨지고(태그 집합이 다른
+  Counter는 Micrometer에서 별개 meter로 취급된다), 수동 API 관측 요구와
+  무관한 변경이 기존 코드에 섞인다. 완전히 분리된 `careerops.scheduler.alio.*`
+  네임스페이스를 추가하는 쪽이 기존 코드/테스트에 영향을 주지 않으면서도
+  "자동 실행이 실제로 동작하고 있는가"를 더 명확하게 관측할 수 있다.
+
+**이유**: "현재 단일 인스턴스 MVP에 필요한 최소한의 보호만 구현한다"는
+사용자 요구에 정확히 비례하는 선택이다. `fixedDelay`는 새 코드나
+dependency 없이 Spring 기본 동작만으로 동시 실행 방지를 얻고, 기존
+수집·저장 로직을 전혀 건드리지 않아 회귀 위험이 없다.
+
+**영향**: 다중 인스턴스로 확장할 경우 이 ADR의 "동시 실행 방지" 결정을
+재검토해야 한다 — 그 시점에 필요한 것: (1) 인스턴스 간 상호 배제를 위한
+분산 락(ShedLock 등, 신규 dependency), (2) 락 획득 실패 시의 로깅/metric
+구분(정상적으로 스킵된 것인지 실제 장애인지), (3) 여러 인스턴스가 서로
+다른 시각에 뜨는 경우의 초기 실행 정렬 문제. 지금은 이 세 가지 중 아무것도
+구현하지 않는다.
+
+---
+
+## ADR-0012: `./gradlew bootRun` dev 실행 시 `.env` 자동 로드 —
+## `spring.config.import`(Boot 내장 기능) 채택, 수동 `source .env` 대신
+
+- 날짜: 2026-08-15
+- 상태: 확정
+- 관련 Task: 없음 (COLLECT-003 이후 발견된 dev 환경설정 문제)
+
+**문제**: `application.yml`은 `SPRING_DATASOURCE_URL` 등을 OS 환경변수로만
+주입받는다. `backend/build.gradle`의 `test` task는 이 값을 하드코딩
+override하므로 테스트는 항상 정상 동작하지만(ADR-0010), `./gradlew bootRun`에는
+그런 장치가 없다 — 셸에서 `.env`를 미리 `source`하지 않고 바로 실행하면
+`SPRING_DATASOURCE_URL`이 빈 문자열로 해석되어 `'url' must start with
+"jdbc"` 오류로 기동에 실패한다(실제 재현 확인).
+
+**결정**: `application.yml`에 `spring.config.import:
+optional:file:../.env[.properties]` 1줄을 추가한다. `.env`가 `KEY=VALUE`
+형식(Java `.properties`와 동일한 문법)이라는 점을 이용해, dotenv류 신규
+dependency 없이 Spring Boot가 이미 제공하는 "임의 파일을 `.properties`
+파서로 강제 로드"하는 표준 기능(`[...]` 확장자 힌트)만으로 해결한다.
+`optional:`이므로 `.env`가 없는 환경(예: 운영에서 진짜 OS 환경변수만
+쓰는 경우)에서도 조용히 건너뛴다.
+
+**대안**:
+- **셸에서 `.env`를 `source`한 뒤 `bootRun`을 실행하는 관례로 남기고
+  문서에만 안내** — 기각. 이번 문제가 바로 "사람이 매번 기억해야 하는
+  수동 단계"가 누락되어 발생했다. 코드/설정 변경 없이 문서만 추가하는
+  쪽이 더 보수적이지만, 같은 실수가 반복될 가능성이 높다고 판단해 기각.
+- **`dotenv-java` 등 라이브러리 도입** — 기각. Spring Boot가 이미
+  `spring.config.import`로 동일한 효과를 제공하므로 신규 dependency를
+  추가할 이유가 없다("최신/편해 보인다고 무조건 추가하지 않는다" 원칙).
+- **Spring profile(`application-dev.yml`)에 dev 전용 접속 정보를 평문으로
+  하드코딩** — 기각. `POSTGRES_PASSWORD`/`JOB_ALIO_API_KEY` 같은 값이
+  Git에 커밋되는 설정 파일에 들어가게 되어 "Secret은 절대 Git에 commit하지
+  않는다" 원칙과 정면으로 충돌한다.
+
+**이유**: OS 환경변수가 항상 `spring.config.import`로 로드된 값보다
+우선한다는 점(ADR-0010에서 이미 실측 확인)이 그대로 유지되므로,
+`build.gradle`의 `test` task override는 전혀 영향받지 않는다 — 즉 기존
+테스트 DB 격리 구조를 한 글자도 바꾸지 않고, dev 실행 편의성만 추가로
+얻는다.
+
+**영향**: `./gradlew bootRun`(또는 IDE에서 `BackendApplication` 직접 실행,
+작업 디렉터리가 `backend/`인 경우)은 이제 셸에서 `.env`를 미리 `source`하지
+않아도 정상 기동한다. 저장소 루트가 아닌 다른 위치에서 실행하거나 `backend/`
+기준 상대 경로(`../.env`)가 맞지 않는 특수한 실행 방식(예: 다른 작업
+디렉터리)에서는 여전히 값을 못 찾을 수 있음 — 그 경우 기존처럼 OS
+환경변수를 직접 설정하면 된다.

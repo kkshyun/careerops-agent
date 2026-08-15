@@ -1,4 +1,10 @@
 spring:
+  config:
+    # 저장소 루트 .env를 properties 형식으로 로드(신규 dependency 없이 Boot 내장
+    # spring.config.import[.properties] 힌트 사용). OS 환경변수가 이 값보다
+    # 항상 우선하므로(ADR-0010), test task가 강제하는 SPRING_DATASOURCE_URL은
+    # 영향받지 않는다. .env가 없으면(optional) 조용히 건너뛴다.
+    import: optional:file:../.env[.properties]
   datasource:
     url: ${SPRING_DATASOURCE_URL}
     username: ${POSTGRES_USER}
@@ -16,6 +22,12 @@ careerops:
     alio:
       api-key: ${JOB_ALIO_API_KEY:}
       base-url: https://opendata.alio.go.kr/new/v1/recruit
+  scheduler:
+    alio:
+      enabled: ${CAREEROPS_SCHEDULER_ALIO_ENABLED:true}
+      initial-delay: PT1M
+      fixed-delay: PT6H
+      num-of-rows: 50
 
 management:
   endpoints:

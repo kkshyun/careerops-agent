@@ -8,6 +8,7 @@ final class FixtureAlioJobClient implements AlioJobClient {
 
     private AlioJobListResponse response;
     private AlioApiException exception;
+    private Integer lastNumOfRows;
 
     void respondWith(AlioJobListResponse response) {
         this.response = response;
@@ -21,9 +22,14 @@ final class FixtureAlioJobClient implements AlioJobClient {
 
     @Override
     public AlioJobListResponse fetchList(int pageNo, int numOfRows) {
+        this.lastNumOfRows = numOfRows;
         if (exception != null) {
             throw exception;
         }
         return response;
+    }
+
+    Integer lastNumOfRows() {
+        return lastNumOfRows;
     }
 }

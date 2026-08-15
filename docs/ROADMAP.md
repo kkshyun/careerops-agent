@@ -51,6 +51,25 @@
       `careerops_test` 전용 DB로 자동 테스트를 완전히 격리(ADR-0010).
       41/41 테스트 통과(`.ai/tasks/JOB-002.md`).
 
+## Phase 4 — ALIO 채용공고 자동 수집(Scheduler) (완료)
+
+목표: 수동으로만 실행되던 ALIO 수집(`POST /api/collect/alio`)을 주기적으로
+자동 실행한다. 기존 수집 로직(`AlioCollectorService`)과 수동 API는 변경
+없이 그대로 재사용.
+
+- [x] COLLECT-003 — `AlioCollectionScheduler`(`@Scheduled(fixedDelay)`,
+      기본 6시간 간격/기동 1분 뒤 첫 실행, 설정으로 변경 가능) 추가. 단일
+      인스턴스 겹침 방지는 `fixedDelay` 자체의 특성으로 해결(별도 락 없음,
+      ADR-0011). 실패는 Scheduler 내부에서 흡수해 다음 실행에 영향 없음.
+      `careerops.scheduler.alio.*` 전용 metric(run/duration/fetched/saved/
+      skipped/updated/failed) 신설, 기존 `careerops.collector.*`는 변경
+      없음. 45/45 테스트 통과(`.ai/tasks/COLLECT-003.md`).
+
+### Phase 4 이후 후보
+
+- **다중 인스턴스 분산 Scheduler**(ShedLock 등) — 현재 단일 인스턴스
+  전제. 여러 인스턴스로 확장하는 시점에 ADR-0011 "영향" 절 참고해 재설계.
+
 ### Phase 3 이후 후보 (우선순위 미확정, 필요 시점에 별도 Task로 분리)
 
 - **기관유형/기관분류 텍스트 매핑** — ALIO 목록 API 응답에는 기관 코드
@@ -65,9 +84,9 @@
 - **조회/필터링 API 추가 확장** — `employmentType`/`educationRequirement`/
   게시일 범위 필터, 클라이언트 지정 정렬 등 JOB-002에서 의도적으로 제외한
   항목. 필요성이 실사용에서 확인되면 별도 Task.
-- **Scheduler(정기 수집)**, **cross-source dedup**, **Personal Knowledge
-  Base(PKB) v0**, **Metrics 계측 확장**, **알림(카카오톡)** 등 — 아직 착수
-  전, 우선순위는 사용자 승인 후 결정.
+- **cross-source dedup**, **Personal Knowledge Base(PKB) v0**, **Metrics
+  계측 확장**, **알림(카카오톡)** 등 — 아직 착수 전, 우선순위는 사용자
+  승인 후 결정. (Scheduler(정기 수집)는 Phase 4/COLLECT-003으로 완료됨)
 
 이 문서는 Phase가 진행되며 갱신된다. 완료된 Phase는 체크박스로 남기고,
 다음 Phase/후보를 그 아래 갱신한다.

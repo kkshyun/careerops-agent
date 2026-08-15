@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-**Phase 3 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 4 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
@@ -132,9 +132,18 @@ AND로 조합하는 JPQL `@Query` 1개, `applicationEndAt ASC NULLS LAST` 고정
 발견되어, 같은 docker-compose PostgreSQL 컨테이너에 완전히 분리된
 `careerops_test` DB를 추가하고 `backend/build.gradle`의 `test` task에서
 테스트 JVM의 `SPRING_DATASOURCE_URL`을 그쪽으로 강제하는 방식으로
-격리했다(Testcontainers는 도입하지 않음 — 근거는 ADR-0010). 나머지
-도메인은 아직 코드로 구현되지 않았다. 순서는
-[ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
+격리했다(Testcontainers는 도입하지 않음 — 근거는 ADR-0010). COLLECT-003은
+지금까지 수동 트리거(`POST /api/collect/alio`)로만 실행되던
+`AlioCollectorService.collect(int)`를 전혀 수정하지 않고 그대로 재사용해,
+`collector/alio/`에 `AlioCollectionScheduler`(`@Scheduled`, 기본 6시간
+간격/기동 1분 뒤 첫 실행, `careerops.scheduler.alio.*` 설정으로 변경
+가능)를 추가했다 — 단일 인스턴스 겹침 방지는 `fixedDelay`의 특성만으로
+해결하고 별도 분산 락은 도입하지 않았으며(ADR-0011), 실행 실패는 Scheduler
+내부에서 흡수해 다음 스케줄 실행에 영향을 주지 않는다. 관측은 기존
+`careerops.collector.*`(COLLECT-001)를 건드리지 않고 `careerops.scheduler.alio.*`
+전용 metric 네임스페이스를 신설해 분리했다. 나머지 도메인은 아직 코드로
+구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아
+정한다.
 
 ## 시스템 구성 (개략, 미확정)
 

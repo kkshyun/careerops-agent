@@ -107,6 +107,26 @@ Prometheus label cardinality가 무한정 늘어날 위험이 있다. 출처가 
 증가한다(겹침, 의도된 것). 전자는 "총 저장량", 후자는 "이 수집기의 기여도/
 효과"를 보기 위한 것으로 관측 목적이 다르다.
 
+**Scheduler (COLLECT-003)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_scheduler_alio_run_total` | `careerops.scheduler.alio.run` | Counter | `result`=`success`\|`failure` | ALIO 자동 수집(Scheduler) 실행 자체의 성공/실패 횟수(개별 item 실패는 포함 안 함 — `collect()` 호출 자체가 예외 없이 끝나면 success) | `AlioCollectionScheduler` — 실행 종료 시점 |
+| `careerops_scheduler_alio_duration_seconds` | `careerops.scheduler.alio.duration` | Timer | 없음 | 1회 실행 소요 시간 | `AlioCollectionScheduler` — 실행 전체 |
+| `careerops_scheduler_alio_fetched_total` | `careerops.scheduler.alio.fetched` | Counter | 없음 | Scheduler 실행으로 수집한 원본 item 수 누적 | `AlioCollectionScheduler` — 성공 실행 후 |
+| `careerops_scheduler_alio_saved_total` | `careerops.scheduler.alio.saved` | Counter | 없음 | Scheduler 실행으로 신규 저장된 건수 누적 | `AlioCollectionScheduler` — 성공 실행 후 |
+| `careerops_scheduler_alio_skipped_total` | `careerops.scheduler.alio.skipped` | Counter | 없음 | Scheduler 실행 중 변경 없어 skip된 건수 누적 | `AlioCollectionScheduler` — 성공 실행 후 |
+| `careerops_scheduler_alio_updated_total` | `careerops.scheduler.alio.updated` | Counter | 없음 | Scheduler 실행 중 상태가 갱신된 건수 누적 | `AlioCollectionScheduler` — 성공 실행 후 |
+| `careerops_scheduler_alio_failed_total` | `careerops.scheduler.alio.failed` | Counter | 없음 | Scheduler 실행 중 개별 item 실패 건수 누적(`collect()` 자체 실패는 `run{result=failure}`로 별도 집계) | `AlioCollectionScheduler` — 성공 실행 후 |
+
+`careerops_collector_*`(COLLECT-001)와 겹치는 것처럼 보이지만 관측 목적이
+다르다(위 "`careerops_job_creation_total`(JOB-001)과의 관계"와 동일한
+원칙) — `careerops_collector_*`는 트리거 출처(수동/자동) 무관 총량이고,
+`careerops_scheduler_alio_*`는 "자동 실행이 실제로 동작하고 있는가"를 사람
+개입 없이 관측하기 위한 전용 지표다. `AlioCollectorService`/
+`CollectController`/`CollectResult`는 COLLECT-003으로 전혀 수정되지
+않았다.
+
 **Manual Job Import (IMPORT-001)**
 
 | 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
