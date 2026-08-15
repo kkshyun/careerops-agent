@@ -1,0 +1,22 @@
+{
+  "result": [
+    {
+      "instNm": "변경되면 안 되는 기관명",
+      "recrutPbancTtl": "변경되면 안 되는 제목",
+      "srcUrl": "https://example.invalid/alio/changed",
+      "recrutPblntSn": 1001,
+      "pbancBgngYmd": "20260802",
+      "pbancEndYmd": "20260930",
+      "recrutSeNm": "경력",
+      "hireTypeNmLst": "비정규직",
+      "acbgCondNmLst": "박사",
+      "ongoingYn": "N",
+      "pblntInstCd": "CHANGED",
+      "ncsCdNmLst": "변경 직무",
+      "workRgnNmLst": "제주"
+    }
+  ],
+  "resultCode": "200",
+  "resultMsg": "성공했습니다.",
+  "totalCount": 1
+}

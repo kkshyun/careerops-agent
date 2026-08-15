@@ -115,9 +115,15 @@ Scheduler·cross-source dedup·웹 크롤링은 아직 없음). IMPORT-001부터
 `com.careerops.backend.manualimport`(`POST /api/import/jobs/manual`,
 `source="MANUAL"` 서버 강제, URL 접속 없이 형식 검증만)가 추가된다 — 서버가
 임의 URL에 접속하는 기능(HTTP GET/크롤링/JS 렌더링, SSRF 방어 포함)은
-아직 없고, 그 판단 근거는 `docs/DECISIONS.md` ADR-0008 참고. 나머지
-도메인은 아직 코드로 구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서
-사용자 승인을 받아 정한다.
+아직 없고, 그 판단 근거는 `docs/DECISIONS.md` ADR-0008 참고. COLLECT-002는
+사람인 API 승인 없이 ALIO 단일 Provider로 MVP를 진행하기로 한 결정(ADR-0009)
+이후, 실제 ALIO 응답을 재검증해 `JobPosting`에 `careerLevel`(경력구분)/
+`educationRequirement`(필요학력)/`status`(진행·마감)/`institutionCode`
+(기관코드) 필드를 추가하고, 기존에 이름과 의미가 어긋나 있던
+`employmentType`(고용형태) 매핑을 정정했다. 재수집 시에는 `status`만
+비교해 변경분을 갱신하고 다른 필드는 최초 저장값을 유지한다(전체 필드
+동기화는 아직 없음). 나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
+[ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
 
 ## 시스템 구성 (개략, 미확정)
 

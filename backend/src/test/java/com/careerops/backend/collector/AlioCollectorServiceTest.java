@@ -40,12 +40,17 @@ class AlioCollectorServiceTest {
 
         CollectResult result = service.collect(50);
 
-        assertThat(result).isEqualTo(new CollectResult("ALIO", 2, 2, 0, 0, "success"));
+        assertThat(result).isEqualTo(new CollectResult("ALIO", 2, 2, 0, 0, 0, "success"));
         assertThat(repository.count()).isEqualTo(rowsBefore + 2);
         JobPosting first = repository.findAll().stream()
                 .filter(job -> "1001".equals(job.getExternalId())).findFirst().orElseThrow();
         assertThat(first.getCompanyName()).isEqualTo("합성 공공기관 A");
         assertThat(first.getTitle()).isEqualTo("2026년 전산직 신입 채용");
+        assertThat(first.getEmploymentType()).isEqualTo("정규직");
+        assertThat(first.getCareerLevel()).isEqualTo("신입");
+        assertThat(first.getEducationRequirement()).isEqualTo("학력무관");
+        assertThat(first.getStatus()).isEqualTo("OPEN");
+        assertThat(first.getInstitutionCode()).isEqualTo("C0059");
         assertThat(first.getSource()).isEqualTo("ALIO");
         assertThat(first.getSourceUrl()).isEqualTo("https://example.invalid/alio/1001");
         assertThat(first.getApplicationStartAt()).isEqualTo(LocalDate.of(2026, 8, 1));
@@ -64,11 +69,31 @@ class AlioCollectorServiceTest {
         long rowsAfterFirst = repository.count();
         CollectResult second = service.collect(50);
 
-        assertThat(first).isEqualTo(new CollectResult("ALIO", 3, 1, 0, 2, "success"));
-        assertThat(second).isEqualTo(new CollectResult("ALIO", 3, 0, 1, 2, "success"));
+        assertThat(first).isEqualTo(new CollectResult("ALIO", 3, 1, 0, 0, 2, "success"));
+        assertThat(second).isEqualTo(new CollectResult("ALIO", 3, 0, 1, 0, 2, "success"));
         assertThat(repository.count()).isEqualTo(rowsAfterFirst);
         assertThat(counter("careerops.collector.failed", "source", "alio", "reason", "invalid_item"))
                 .isEqualTo(invalidBefore + 4);
+    }
+
+    @Test
+    void updatesOnlyStatusWhenExistingPostingStatusChanges() throws Exception {
+        client.respondWith(AlioFixtureSupport.read(objectMapper, "alio-list-response-valid.json"));
+        service.collect(50);
+        JobPosting before = repository.findFirstBySourceAndExternalId("ALIO", "1001").orElseThrow();
+        long rowsBefore = repository.count();
+        String originalCompanyName = before.getCompanyName();
+        String originalTitle = before.getTitle();
+
+        client.respondWith(AlioFixtureSupport.read(objectMapper, "alio-list-response-closed.json"));
+        CollectResult result = service.collect(50);
+        JobPosting after = repository.findFirstBySourceAndExternalId("ALIO", "1001").orElseThrow();
+
+        assertThat(result).isEqualTo(new CollectResult("ALIO", 1, 0, 0, 1, 0, "success"));
+        assertThat(repository.count()).isEqualTo(rowsBefore);
+        assertThat(after.getStatus()).isEqualTo("CLOSED");
+        assertThat(after.getCompanyName()).isEqualTo(originalCompanyName);
+        assertThat(after.getTitle()).isEqualTo(originalTitle);
     }
 
     @Test

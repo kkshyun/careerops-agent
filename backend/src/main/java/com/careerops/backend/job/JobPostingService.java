@@ -26,11 +26,17 @@ public class JobPostingService {
     public JobPostingResponse create(JobPostingCreateRequest request) {
         JobPosting saved = repository.save(new JobPosting(
                 request.companyName(), request.title(), request.employmentType(),
+                request.careerLevel(), request.educationRequirement(), request.status(), request.institutionCode(),
                 request.jobCategory(), request.location(), request.applicationStartAt(),
                 request.applicationEndAt(), request.source(), request.sourceUrl(), request.externalId()
         ));
         createdCounter.increment();
         return JobPostingResponse.from(saved);
+    }
+
+    public void updateStatus(JobPosting jobPosting, String status) {
+        jobPosting.updateStatus(status);
+        repository.save(jobPosting);
     }
 
     public JobPostingResponse findById(Long id) {

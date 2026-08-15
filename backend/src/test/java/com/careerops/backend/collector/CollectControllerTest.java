@@ -41,6 +41,7 @@ class CollectControllerTest {
                 .andExpect(jsonPath("$.source").value("ALIO"))
                 .andExpect(jsonPath("$.fetched").value(2))
                 .andExpect(jsonPath("$.saved").value(2))
+                .andExpect(jsonPath("$.updated").value(0))
                 .andExpect(jsonPath("$.failed").value(0));
 
         assertThat(repository.count()).isEqualTo(rowsBefore + 2);

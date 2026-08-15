@@ -45,6 +45,10 @@ class JobPostingControllerTest {
                 .andExpect(jsonPath("$.companyName").value("CareerOps Bank"))
                 .andExpect(jsonPath("$.title").value("신입 IT 개발자"))
                 .andExpect(jsonPath("$.employmentType").value("신입"))
+                .andExpect(jsonPath("$.careerLevel").value("신입"))
+                .andExpect(jsonPath("$.educationRequirement").value("대졸"))
+                .andExpect(jsonPath("$.status").value("OPEN"))
+                .andExpect(jsonPath("$.institutionCode").value("B001"))
                 .andExpect(jsonPath("$.jobCategory").value("IT/전산"))
                 .andExpect(jsonPath("$.location").value("서울"))
                 .andExpect(jsonPath("$.applicationStartAt").value("2026-08-13"))
@@ -75,7 +79,7 @@ class JobPostingControllerTest {
     @Test
     void getsExistingJobPosting() throws Exception {
         JobPosting saved = repository.saveAndFlush(new JobPosting(
-                "CareerOps Bank", "신입 IT 개발자", "신입", "IT/전산", "서울",
+                "CareerOps Bank", "신입 IT 개발자", "정규직", "신입", "대졸", "OPEN", "B001", "IT/전산", "서울",
                 LocalDate.of(2026, 8, 13), LocalDate.of(2026, 8, 31), "MANUAL",
                 "https://example.com/jobs/123", "123"
         ));
@@ -85,6 +89,10 @@ class JobPostingControllerTest {
                 .andExpect(jsonPath("$.id").value(saved.getId()))
                 .andExpect(jsonPath("$.companyName").value("CareerOps Bank"))
                 .andExpect(jsonPath("$.title").value("신입 IT 개발자"))
+                .andExpect(jsonPath("$.careerLevel").value("신입"))
+                .andExpect(jsonPath("$.educationRequirement").value("대졸"))
+                .andExpect(jsonPath("$.status").value("OPEN"))
+                .andExpect(jsonPath("$.institutionCode").value("B001"))
                 .andExpect(jsonPath("$.source").value("MANUAL"))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty());
     }
@@ -101,6 +109,10 @@ class JobPostingControllerTest {
                   "companyName": "CareerOps Bank",
                   "title": "신입 IT 개발자",
                   "employmentType": "신입",
+                  "careerLevel": "신입",
+                  "educationRequirement": "대졸",
+                  "status": "OPEN",
+                  "institutionCode": "B001",
                   "jobCategory": "IT/전산",
                   "location": "서울",
                   "applicationStartAt": "2026-08-13",

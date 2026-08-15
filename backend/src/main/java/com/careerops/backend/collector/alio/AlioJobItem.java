@@ -11,6 +11,10 @@ public record AlioJobItem(
         String pbancBgngYmd,
         String pbancEndYmd,
         String recrutSeNm,
+        String hireTypeNmLst,
+        String acbgCondNmLst,
+        String ongoingYn,
+        String pblntInstCd,
         String ncsCdNmLst,
         String workRgnNmLst
 ) {

@@ -21,7 +21,11 @@ class JobPostingRepositoryTest {
         JobPosting saved = repository.saveAndFlush(new JobPosting(
                 "CareerOps Bank",
                 "신입 IT 개발자",
+                "정규직",
                 "신입",
+                "대졸",
+                "OPEN",
+                "B001",
                 "IT/전산",
                 "서울",
                 LocalDate.of(2026, 8, 13),
@@ -35,7 +39,11 @@ class JobPostingRepositoryTest {
 
         assertThat(found.getCompanyName()).isEqualTo("CareerOps Bank");
         assertThat(found.getTitle()).isEqualTo("신입 IT 개발자");
-        assertThat(found.getEmploymentType()).isEqualTo("신입");
+        assertThat(found.getEmploymentType()).isEqualTo("정규직");
+        assertThat(found.getCareerLevel()).isEqualTo("신입");
+        assertThat(found.getEducationRequirement()).isEqualTo("대졸");
+        assertThat(found.getStatus()).isEqualTo("OPEN");
+        assertThat(found.getInstitutionCode()).isEqualTo("B001");
         assertThat(found.getJobCategory()).isEqualTo("IT/전산");
         assertThat(found.getLocation()).isEqualTo("서울");
         assertThat(found.getApplicationStartAt()).isEqualTo(LocalDate.of(2026, 8, 13));
@@ -49,5 +57,16 @@ class JobPostingRepositoryTest {
     @Test
     void returnsEmptyForUnknownId() {
         assertThat(repository.findById(Long.MAX_VALUE)).isEmpty();
+    }
+
+    @Test
+    void findsBySourceAndExternalId() {
+        JobPosting saved = repository.saveAndFlush(new JobPosting(
+                "기관", "공고", null, null, null, null, null, null, null,
+                null, null, "ALIO", null, "external-1"
+        ));
+
+        assertThat(repository.findFirstBySourceAndExternalId("ALIO", "external-1")).contains(saved);
+        assertThat(repository.findFirstBySourceAndExternalId("ALIO", "missing")).isEmpty();
     }
 }

@@ -8,6 +8,10 @@
         "pbancBgngYmd": "20260901",
         "pbancEndYmd": "20260915",
         "recrutSeNm": "신입",
+        "hireTypeNmLst": "정규직",
+        "acbgCondNmLst": "학력무관",
+        "ongoingYn": "Y",
+        "pblntInstCd": "C0061",
         "ncsCdNmLst": "정보보안",
         "workRgnNmLst": "대전"
     },

@@ -5,6 +5,7 @@ public record CollectResult(
         int fetched,
         int saved,
         int skipped,
+        int updated,
         int failed,
         String result
 ) {

@@ -11,6 +11,7 @@ import jakarta.validation.Validator;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 @Service
@@ -60,6 +61,7 @@ public class AlioCollectorService {
         int fetched = items.size();
         int saved = 0;
         int skipped = 0;
+        int updated = 0;
         int failed = 0;
         fetchedCounter.increment(fetched);
 
@@ -77,8 +79,14 @@ public class AlioCollectorService {
                 failedCounter("invalid_item").increment();
                 continue;
             }
-            if (repository.existsBySourceAndExternalId(request.source(), request.externalId())) {
-                skipped++;
+            var existing = repository.findFirstBySourceAndExternalId(request.source(), request.externalId());
+            if (existing.isPresent()) {
+                if (Objects.equals(existing.get().getStatus(), request.status())) {
+                    skipped++;
+                } else {
+                    jobPostingService.updateStatus(existing.get(), request.status());
+                    updated++;
+                }
                 continue;
             }
             jobPostingService.create(request);
@@ -87,7 +95,7 @@ public class AlioCollectorService {
         }
 
         runCounter("success").increment();
-        return new CollectResult("ALIO", fetched, saved, skipped, failed, "success");
+        return new CollectResult("ALIO", fetched, saved, skipped, updated, failed, "success");
     }
 
     private Counter failedCounter(String reason) {

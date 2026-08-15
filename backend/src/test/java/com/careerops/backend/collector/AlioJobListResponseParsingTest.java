@@ -20,5 +20,9 @@ class AlioJobListResponseParsingTest {
         assertThat(response.result().getFirst().instNm()).isEqualTo("합성 공공기관 A");
         assertThat(response.result().getFirst().recrutPblntSn()).isEqualTo(1001L);
         assertThat(response.result().getFirst().pbancBgngYmd()).isEqualTo("20260801");
+        assertThat(response.result().getFirst().hireTypeNmLst()).isEqualTo("정규직");
+        assertThat(response.result().getFirst().acbgCondNmLst()).isEqualTo("학력무관");
+        assertThat(response.result().getFirst().ongoingYn()).isEqualTo("Y");
+        assertThat(response.result().getFirst().pblntInstCd()).isEqualTo("C0059");
     }
 }

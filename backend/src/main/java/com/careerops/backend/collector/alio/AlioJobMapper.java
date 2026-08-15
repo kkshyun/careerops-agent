@@ -18,7 +18,11 @@ public final class AlioJobMapper {
         return new JobPostingCreateRequest(
                 item.instNm(),
                 item.recrutPbancTtl(),
+                emptyToNull(item.hireTypeNmLst()),
                 emptyToNull(item.recrutSeNm()),
+                emptyToNull(item.acbgCondNmLst()),
+                mapStatus(item.ongoingYn()),
+                emptyToNull(item.pblntInstCd()),
                 emptyToNull(item.ncsCdNmLst()),
                 emptyToNull(item.workRgnNmLst()),
                 parseDate(item.pbancBgngYmd()),
@@ -27,6 +31,14 @@ public final class AlioJobMapper {
                 validHttpUrlOrNull(item.srcUrl()),
                 item.recrutPblntSn() == null ? null : String.valueOf(item.recrutPblntSn())
         );
+    }
+
+    private static String mapStatus(String ongoingYn) {
+        return switch (ongoingYn == null ? "" : ongoingYn) {
+            case "Y" -> "OPEN";
+            case "N" -> "CLOSED";
+            default -> null;
+        };
     }
 
     private static LocalDate parseDate(String value) {
