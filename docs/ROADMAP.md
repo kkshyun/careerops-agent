@@ -39,7 +39,19 @@
       고용형태 필드 의미 정정) + 진행/마감 상태(`ongoingYn`) 갱신 전략.
       실제 서비스키로 재검증 완료(`.ai/tasks/COLLECT-002.md`).
 
-### Phase 2 이후 후보 (우선순위 미확정, 필요 시점에 별도 Task로 분리)
+## Phase 3 — JobPosting 조회/필터링 API (완료)
+
+목표: DB에 쌓인 ALIO 채용공고를 사용자가 실제로 탐색할 수 있도록
+`GET /api/jobs` 목록 조회 + 필터링 + pagination API를 제공한다. 수집
+구조/외부 API 연동은 변경하지 않음.
+
+- [x] JOB-002 — `GET /api/jobs`(status/careerLevel/companyName/jobCategory
+      필터 AND 조합, `applicationEndAt ASC NULLS LAST` 고정 정렬,
+      pagination). 구현 중 로컬 dev DB 오염으로 테스트가 불안정함을 발견해
+      `careerops_test` 전용 DB로 자동 테스트를 완전히 격리(ADR-0010).
+      41/41 테스트 통과(`.ai/tasks/JOB-002.md`).
+
+### Phase 3 이후 후보 (우선순위 미확정, 필요 시점에 별도 Task로 분리)
 
 - **기관유형/기관분류 텍스트 매핑** — ALIO 목록 API 응답에는 기관 코드
   (`pblntInstCd`)만 있고 유형/분류명 필드가 없음이 확인됨(COLLECT-002 조사).
@@ -50,8 +62,9 @@
 - **공고 전체 필드 갱신 전략** — 현재(COLLECT-002 기준)는 재수집 시 상태만
   갱신하고 나머지 필드는 최초 저장값 유지. 필드 전체를 최신화하려면 별도
   설계 필요.
-- **조회/필터링 API 확장** — 진행 중/마감, 채용분야, 지역 등 기준 `GET
-  /api/jobs` 검색·필터 파라미터.
+- **조회/필터링 API 추가 확장** — `employmentType`/`educationRequirement`/
+  게시일 범위 필터, 클라이언트 지정 정렬 등 JOB-002에서 의도적으로 제외한
+  항목. 필요성이 실사용에서 확인되면 별도 Task.
 - **Scheduler(정기 수집)**, **cross-source dedup**, **Personal Knowledge
   Base(PKB) v0**, **Metrics 계측 확장**, **알림(카카오톡)** 등 — 아직 착수
   전, 우선순위는 사용자 승인 후 결정.

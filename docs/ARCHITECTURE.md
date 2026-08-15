@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-**Phase 2 진행 중.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 3 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
@@ -122,7 +122,18 @@ Scheduler·cross-source dedup·웹 크롤링은 아직 없음). IMPORT-001부터
 (기관코드) 필드를 추가하고, 기존에 이름과 의미가 어긋나 있던
 `employmentType`(고용형태) 매핑을 정정했다. 재수집 시에는 `status`만
 비교해 변경분을 갱신하고 다른 필드는 최초 저장값을 유지한다(전체 필드
-동기화는 아직 없음). 나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
+동기화는 아직 없음). JOB-002는 이렇게 쌓인 `JobPosting`을 탐색할 수 있게
+`GET /api/jobs` 목록 조회 API를 추가했다 — `status`(정확 일치)/
+`careerLevel`/`companyName`/`jobCategory`(부분 일치) 4개 optional 필터를
+AND로 조합하는 JPQL `@Query` 1개, `applicationEndAt ASC NULLS LAST` 고정
+정렬, `page`/`size`(최대 100) pagination을 제공하며 매 요청마다 ALIO를
+재호출하지 않고 DB만 조회한다. 이 Task 진행 중 로컬 dev DB(`careerops`)에
+쌓인 실제 데이터가 자동 테스트의 개수/순서 검증과 섞여 실패하는 문제가
+발견되어, 같은 docker-compose PostgreSQL 컨테이너에 완전히 분리된
+`careerops_test` DB를 추가하고 `backend/build.gradle`의 `test` task에서
+테스트 JVM의 `SPRING_DATASOURCE_URL`을 그쪽으로 강제하는 방식으로
+격리했다(Testcontainers는 도입하지 않음 — 근거는 ADR-0010). 나머지
+도메인은 아직 코드로 구현되지 않았다. 순서는
 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
 
 ## 시스템 구성 (개략, 미확정)

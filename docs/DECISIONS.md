@@ -429,3 +429,81 @@ COLLECT-002에서 실제 ALIO 응답을 직접 재검증한 결과, 진짜 고�
 8. **이용약관/robots.txt 준수**: `docs/PROJECT.md` 스코프 밖 항목("채용공고
    출처 사이트의 이용약관을 위반하는 수집 방식")과 직결된다 — 자동 추출
    기능을 설계하는 시점에 이 제약을 다시 확인해야 한다.
+
+---
+
+## ADR-0010: 자동 테스트 전용 PostgreSQL DB(`careerops_test`) 분리 — Testcontainers 도입 대신 같은 컨테이너에 DB 추가
+
+- 날짜: 2026-08-15
+- 상태: 확정
+- 관련 Task: JOB-002
+
+**문제**: JOB-002(`GET /api/jobs` 필터/정렬/pagination)의 신규 테스트는 처음으로
+"필터 없이 전체 목록"이나 "정확한 개수/순서"를 검증했다. 그런데
+`JobPostingRepositoryTest`(`@DataJpaTest`)와 `JobPostingControllerTest`
+(`@SpringBootTest`)는 CORE-001부터 `@AutoConfigureTestDatabase(replace = NONE)`로
+로컬 dev Docker Compose PostgreSQL(`careerops` DB)을 그대로 재사용해왔다.
+이 dev DB에는 COLLECT-001/002 `[수동]` 실키 검증 등으로 이미 저장된 실제
+레코드가 65건 남아 있었고, 새 테스트의 정확한 개수/순서 assertion이 이
+기존 데이터와 섞여 실패했다(예: 21건 저장 후 `totalElements`가 21이 아니라
+86으로 나옴). 각 테스트 메서드는 트랜잭션 롤백으로 격리되지만, 애초에
+"빈 테이블"을 전제한 assertion 자체가 이 프로젝트에서 처음 등장했다.
+
+**결정**: 별도 테스트 인프라(Testcontainers)를 새로 들이지 않고, 이미 떠
+있는 같은 docker-compose PostgreSQL 컨테이너 안에 **`careerops_test`**
+데이터베이스를 하나 더 만든다. `docker-compose.yml`의 postgres 서비스에
+`/docker-entrypoint-initdb.d` init script(`docker/postgres-init/`)를 추가해
+앞으로 새로 뜨는 볼륨은 자동으로 `careerops_test`까지 생성되게 하고,
+이미 데이터가 있는 기존 볼륨(init script는 최초 초기화 시에만 실행됨)에는
+`CREATE DATABASE careerops_test;`를 1회 수동 실행해 추가한다(기존
+`careerops` DB는 전혀 건드리지 않는 추가적(additive) DDL). 테스트 쪽은
+**`backend/build.gradle`의 `tasks.named('test') { ... }`에
+`environment 'SPRING_DATASOURCE_URL', 'jdbc:postgresql://localhost:5432/careerops_test'`
+1줄을 추가**해 테스트 JVM의 `SPRING_DATASOURCE_URL`만 강제로 재정의한다.
+(최초에는 `backend/src/test/resources/application.properties`로
+`spring.datasource.url`을 재정의하려 했으나, Spring Boot의
+`PropertySource` 우선순위상 OS 환경변수가 어떤 설정 파일보다 항상 위에
+있어 `.env`로 source된 `SPRING_DATASOURCE_URL` 환경변수가 이 override를
+무시하는 것을 실제 테스트 실행으로 확인했다 — 이 파일은 삭제하고
+`build.gradle` 방식으로 교체했다. `SPRING_DATASOURCE_URL`이 필수 환경변수인
+main `application.yml` 구조상, 파일 기반 override는 애초에 이 값을
+이길 수 없다.) 나머지 설정(ddl-auto, redis, actuator, collector 등)은
+그대로 main `application.yml`의 값을 물려받는다. Flyway가 테스트 컨텍스트
+기동 시마다 `careerops_test`를 자동 마이그레이션하므로 별도 스키마 준비
+스텝도 필요 없다. 테스트 코드에 `deleteAll()` 같은 방어적 정리 로직이나,
+프로덕션 쿼리에 테스트 전용 식별자(UUID prefix 등)를 끼워 넣는 방식은
+채택하지 않는다.
+
+**대안**:
+- **Testcontainers로 전환** — 기각(이번 시점). `CORE-001`/`JOB-001`에서
+  이미 "1인 프로젝트, CI 파이프라인 없음" 단계에서는 Testcontainers가
+  선제적 확장이라고 명시적으로 결정했고, "CI를 실제로 구성하는 시점에
+  재검토"하기로 남겨뒀다(`.ai/tasks/JOB-001.md`). 지금 발견된 문제는
+  "로컬에 Postgres가 아예 없다"가 아니라 "기존 dev DB와 테스트가 상태를
+  공유한다"이므로, 같은 컨테이너에 DB 하나를 추가하는 쪽이 문제 정의에
+  더 정확히 비례한다. CI 파이프라인을 실제로 만드는 시점(그때는 CI
+  환경에 상시 Postgres가 없을 수 있음)에는 이 ADR 자체를 재검토한다.
+- **테스트 메서드 안에서 `repository.deleteAll()` 후 진행(트랜잭션
+  롤백으로 dev 데이터는 복원됨)** — 기각. 이론적으로는 각 테스트
+  트랜잭션이 롤백되므로 dev 데이터가 실제로 손실되지는 않지만, "실제
+  운영성 데이터가 있는 DB에 대해 삭제 오퍼레이션을 실행하는 테스트 코드"를
+  만드는 것 자체가 사고 위험(롤백 로직이 어디선가 깨지면 실제 데이터
+  손실)과 심리적 부담이 크다는 사용자 피드백에 따라 채택하지 않는다.
+- **테스트 데이터에 UUID/prefix를 부여하고 쿼리에서 그 prefix로 필터링** —
+  기각. 프로덕션 코드(Repository 쿼리)에 테스트 전용 조건이 스며들게
+  되어 "테스트를 위해 프로덕션 코드를 왜곡하지 않는다"는 원칙과 충돌한다.
+
+**이유**: 새 dependency 없이(Testcontainers 미도입), 프로덕션 코드
+변경 없이, dev DB의 기존 데이터를 전혀 위험에 노출하지 않으면서 테스트
+격리 문제를 근본적으로 해결한다. 기존 CORE-001/JOB-001 결정("로컬 Docker
+Compose Postgres 사용, Testcontainers는 아직 아님")과도 상충하지 않는다.
+
+**영향**: 로컬 개발 환경을 처음 세팅하는 사람은 `docker compose up -d`
+실행 시 `careerops`와 `careerops_test` 2개 DB가 자동으로 생성된다(신규
+볼륨 기준). 이미 볼륨이 있는 환경(이번 프로젝트의 현재 로컬 환경 포함)은
+`careerops_test`를 1회 수동으로 만들어야 한다 — 이 사실을
+`docs/ARCHITECTURE.md` 또는 README 성격의 문서에 남겨 향후 혼란을
+방지한다. `backend/build.gradle`의 `test` task에 datasource 환경변수
+override가 생기므로, 이후 테스트 관련 설정을 바꾸는 사람은 이 override가
+`.env`의 `SPRING_DATASOURCE_URL`보다 우선한다는 점을 인지해야 한다(설정
+파일이 아니라 Gradle test task 환경변수이기 때문에 가능한 override다).

@@ -103,6 +103,76 @@ class JobPostingControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    @Test
+    void getsFilteredJobsWithListResponseFieldsAndFixedOrder() throws Exception {
+        JobPosting later = save("한국전력공사", "OPEN", "신입+경력", "정보기술,경영·행정·사무",
+                LocalDate.of(2026, 8, 30));
+        JobPosting earlier = save("한국전력공사", "OPEN", "신입", "정보기술",
+                LocalDate.of(2026, 8, 20));
+        save("한국전력공사", "CLOSED", "신입", "정보기술", LocalDate.of(2026, 8, 10));
+        save("다른기관", "OPEN", "신입", "정보기술", null);
+
+        mockMvc.perform(get("/api/jobs")
+                        .param("status", "OPEN")
+                        .param("careerLevel", "신입")
+                        .param("companyName", "한국전력")
+                        .param("jobCategory", "정보기술"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].id").value(earlier.getId()))
+                .andExpect(jsonPath("$.content[1].id").value(later.getId()))
+                .andExpect(jsonPath("$.content[0].companyName").value("한국전력공사"))
+                .andExpect(jsonPath("$.content[0].title").value("공고"))
+                .andExpect(jsonPath("$.content[0].status").value("OPEN"))
+                .andExpect(jsonPath("$.content[0].createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.totalElements").value(2))
+                .andExpect(jsonPath("$.totalPages").value(1))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(20));
+    }
+
+    @Test
+    void usesDefaultPaginationAndReturnsSecondPage() throws Exception {
+        for (int index = 0; index < 21; index++) {
+            save("기관" + index, "OPEN", "신입", "정보기술", LocalDate.of(2026, 8, 1).plusDays(index));
+        }
+
+        mockMvc.perform(get("/api/jobs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(20))
+                .andExpect(jsonPath("$.totalElements").value(21))
+                .andExpect(jsonPath("$.totalPages").value(2))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(20));
+
+        mockMvc.perform(get("/api/jobs").param("page", "1").param("size", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.page").value(1));
+    }
+
+    @Test
+    void clampsRequestedPageSizeToOneHundred() throws Exception {
+        for (int index = 0; index < 101; index++) {
+            save("기관" + index, "OPEN", "신입", "정보기술", LocalDate.of(2026, 8, 1).plusDays(index));
+        }
+
+        mockMvc.perform(get("/api/jobs").param("size", "500"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(100))
+                .andExpect(jsonPath("$.totalElements").value(101))
+                .andExpect(jsonPath("$.totalPages").value(2))
+                .andExpect(jsonPath("$.size").value(100));
+    }
+
+    private JobPosting save(
+            String companyName, String status, String careerLevel, String jobCategory, LocalDate applicationEndAt) {
+        return repository.save(new JobPosting(
+                companyName, "공고", null, careerLevel, null, status, null, jobCategory, null,
+                null, applicationEndAt, "ALIO", null, companyName
+        ));
+    }
+
     private String validRequestJson() {
         return """
                 {
