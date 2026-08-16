@@ -11,6 +11,8 @@ import java.util.Optional;
 public interface JobPostingRepository extends JpaRepository<JobPosting, Long> {
     Optional<JobPosting> findFirstBySourceAndExternalId(String source, String externalId);
 
+    long countBySourceAndExternalId(String source, String externalId);
+
     Optional<JobPosting> findFirstBySourceAndSourceUrl(String source, String sourceUrl);
 
     @Query("""

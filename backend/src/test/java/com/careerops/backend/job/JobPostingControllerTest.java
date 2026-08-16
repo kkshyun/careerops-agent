@@ -169,7 +169,7 @@ class JobPostingControllerTest {
             String companyName, String status, String careerLevel, String jobCategory, LocalDate applicationEndAt) {
         return repository.save(new JobPosting(
                 companyName, "공고", null, careerLevel, null, status, null, jobCategory, null,
-                null, applicationEndAt, "ALIO", null, companyName
+                null, applicationEndAt, "ALIO", null, java.util.UUID.randomUUID().toString()
         ));
     }
 

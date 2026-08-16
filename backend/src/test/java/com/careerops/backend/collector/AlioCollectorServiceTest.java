@@ -2,6 +2,7 @@ package com.careerops.backend.collector;
 
 import com.careerops.backend.collector.alio.AlioApiException;
 import com.careerops.backend.collector.alio.AlioCollectorService;
+import com.careerops.backend.collector.alio.AlioCollectionInProgressException;
 import com.careerops.backend.collector.alio.AlioJobListResponse;
 import com.careerops.backend.job.JobPosting;
 import com.careerops.backend.job.JobPostingRepository;
@@ -20,6 +21,10 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -123,6 +128,34 @@ class AlioCollectorServiceTest {
         assertThat(repository.count()).isEqualTo(rowsBefore);
         assertThat(counter("careerops.collector.run", "source", "alio", "result", "failed"))
                 .isEqualTo(runBefore + 1);
+    }
+
+    @Test
+    void rejectsConcurrentRunImmediatelyAndUnlocksAfterCompletion() throws Exception {
+        client.respondWith(new AlioJobListResponse(List.of(), "200", "성공", 0));
+        client.blockNextFetch();
+        double skippedBefore = counter(
+                "careerops.collector.run", "source", "alio", "result", "skipped_locked");
+
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<CollectResult> running = executor.submit(() -> service.collect(1));
+            assertThat(client.awaitFetchEntered()).isTrue();
+
+            long startedAt = System.nanoTime();
+            assertThatThrownBy(() -> service.collect(1))
+                    .isInstanceOf(AlioCollectionInProgressException.class);
+            assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)).isLessThan(1000);
+
+            client.releaseBlockedFetch();
+            assertThat(running.get(5, TimeUnit.SECONDS).result()).isEqualTo("success");
+        } finally {
+            client.releaseBlockedFetch();
+        }
+
+        client.respondWith(new AlioJobListResponse(List.of(), "200", "성공", 0));
+        assertThat(service.collect(1).result()).isEqualTo("success");
+        assertThat(counter("careerops.collector.run", "source", "alio", "result", "skipped_locked"))
+                .isEqualTo(skippedBefore + 1);
     }
 
     @Test

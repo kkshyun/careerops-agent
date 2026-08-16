@@ -165,9 +165,24 @@ ALIO `list.do`는 페이지당 1000건으로 서버가 조용히 캡을 걸고,
 지켰다. `AlioCollectionScheduler`/`CollectController`/`CollectResult`/
 `AlioDetailEnrichmentService`는 전혀 수정하지 않았고, Scheduler의 기본
 수집 범위만 설정값으로 50 → 5,000건으로 확대했다(전체 112,920건 전수
-순회는 이번 Phase에서 의도적으로 배제 — ADR-0014). 나머지 도메인은 아직
-코드로 구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을
-받아 정한다.
+순회는 이번 Phase에서 의도적으로 배제 — ADR-0014). COLLECT-006은 COLLECT-005
+실 API 검증 중 실제로 재현된 동시 수집 race(수동 API와 Scheduler가 동시에
+실행되며 동일 `(source, external_id)`의 `JobPosting`이 중복 저장, dev DB에
+1,370개 중복 그룹 생성 후 정리)를 코드 레벨에서 근본적으로 막았다 —
+`job_postings(source, external_id)`에 DB UNIQUE 제약(`V4` migration)을
+추가하고, `JobPostingService.createOrGetExisting()`이 unique violation을
+catch해 canonical row로 안전하게 합류하도록 했다(이 프로젝트 전체에
+`@Transactional`이 없어 `repository.save()`가 독립된 짧은 트랜잭션으로
+끝나므로 catch 시점에 이미 안전하게 닫혀 있음을 코드로 확인 — ADR-0015).
+`AlioCollectorService.collect()` 전체를 감싸는 JVM in-process
+`ReentrantLock`(non-blocking `tryLock`)을 병행 도입해 외부 API 중복 호출을
+줄였다 — 이 lock은 correctness의 필수 조건은 아니며(DB UNIQUE만으로 이미
+충분), 단일 인스턴스 MVP의 optimization이다. 락 경합 시 수동 API는 HTTP
+409를, Scheduler는 `failure`가 아닌 `skipped` 집계로 처리한다.
+`AlioDetailEnrichmentService`의 유사한 동시성 취약점(데이터 손상 위험은
+없음)은 트랜잭션 구조 재설계가 필요해 이번 Phase에서 다루지 않고 후속
+Task 후보로 남겼다. 나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
+[ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
 
 ## 시스템 구성 (개략, 미확정)
 

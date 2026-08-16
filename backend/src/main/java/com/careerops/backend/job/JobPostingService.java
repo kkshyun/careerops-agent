@@ -8,6 +8,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.http.HttpStatus;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -18,12 +19,16 @@ public class JobPostingService {
     private final Counter createdCounter;
     private final Counter foundCounter;
     private final Counter notFoundCounter;
+    private final Counter conflictCounter;
 
     public JobPostingService(JobPostingRepository repository, MeterRegistry meterRegistry) {
         this.repository = repository;
         this.createdCounter = Counter.builder("careerops.job.creation").register(meterRegistry);
         this.foundCounter = Counter.builder("careerops.job.read").tag("result", "found").register(meterRegistry);
         this.notFoundCounter = Counter.builder("careerops.job.read").tag("result", "not_found").register(meterRegistry);
+        this.conflictCounter = Counter.builder("careerops.collector.conflict")
+                .tag("source", "alio")
+                .register(meterRegistry);
     }
 
     public JobPosting create(JobPostingCreateRequest request) {
@@ -35,6 +40,21 @@ public class JobPostingService {
         ));
         createdCounter.increment();
         return saved;
+    }
+
+    public CreateOutcome createOrGetExisting(JobPostingCreateRequest request) {
+        try {
+            return new CreateOutcome(create(request), true);
+        } catch (DataIntegrityViolationException exception) {
+            JobPosting existing = repository
+                    .findFirstBySourceAndExternalId(request.source(), request.externalId())
+                    .orElseThrow(() -> exception);
+            conflictCounter.increment();
+            return new CreateOutcome(existing, false);
+        }
+    }
+
+    public record CreateOutcome(JobPosting jobPosting, boolean isNew) {
     }
 
     public void updateStatus(JobPosting jobPosting, String status) {

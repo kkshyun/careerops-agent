@@ -807,3 +807,90 @@ run 도중 신규 공고로 늘어나 stale할 수 있으므로 이 신호를 �
 뿐, 완전히 해소되지는 않음). 전체 히스토리를 다루려면 별도 운영 작업
 (예: 수동으로 큰 `numOfRows`를 넘겨 `POST /api/collect/alio` 1회성 호출)이
 필요하다 — 자동화하지 않는다(`docs/ROADMAP.md` "Phase 6 이후 후보").
+
+---
+
+## ADR-0015: `JobPosting` 동시 수집 race 방지 — DB UNIQUE + exception
+## catch/re-read, JVM in-process 단일 run lock 병행 채택
+
+- 날짜: 2026-08-16
+- 상태: 확정
+- 관련 Task: COLLECT-006
+
+**문제**: COLLECT-005 실 API 검증 중 수동 수집 API(`POST /api/collect/alio`)와
+`AlioCollectionScheduler`가 동시에 실행되면서 동일한 `(source, external_id)`의
+`JobPosting`이 실제로 중복 저장되는 race condition이 재현됐다(dev DB에 1,370개
+중복 그룹 생성, 이후 사용자가 정리). 코드 확인 결과 이 프로젝트 전체에
+`@Transactional`이 하나도 없어(`AlioCollectorService.collect()`를 감싸는
+상위 트랜잭션 없음), `repository.findFirstBySourceAndExternalId(...)`(존재
+확인)와 그 뒤 `repository.save(...)`(INSERT)가 Spring Data JPA가 각각
+독립적으로 여는 별개의 짧은 트랜잭션이라 그 사이 창(window)에 다른 run이
+끼어들면 둘 다 "없음"을 보고 둘 다 INSERT에 성공했다. DB 수준의 무결성
+없이 애플리케이션의 사전 find만으로는 이 race를 막을 수 없었다.
+
+**결정**:
+
+1. **`job_postings(source, external_id)`에 plain UNIQUE 제약** 추가
+   (`uk_job_postings_source_external_id`, `V4__add_job_postings_source_external_id_unique.sql`).
+   `external_id`는 nullable이고(`ManualImportService`는 항상 `NULL`을
+   저장) PostgreSQL이 UNIQUE 제약에서 NULL끼리는 서로 다른 값으로 취급하므로
+   partial index 없이 plain UNIQUE로 충분함을 실측(`\d job_postings`) +
+   dev DB 조회로 확인했다. migration에 데이터 정리 SQL을 넣지 않았다 —
+   실제 중복이 있는 환경에서는 migration이 실패해야 한다(조용히 삭제 금지).
+2. **conflict 발생 시 exception catch/re-read로 canonical row에 합류**한다
+   (`JobPostingService.createOrGetExisting()`). `JobPosting.id`가
+   `GenerationType.IDENTITY`라 `repository.save()`가 `persist()` 즉시 INSERT를
+   실행하고, 그 INSERT는 `save()` 자신이 여는 독립적인 짧은 트랜잭션
+   안에서 일어난다 — 이를 감싸는 상위 트랜잭션이 없으므로, 예외가 호출부에
+   전파되는 시점에는 이미 그 트랜잭션이 rollback되고 닫혀 있다(상위
+   트랜잭션이 rollback-only로 오염되는 문제 없음). 그래서 안전하게 catch하고
+   `findFirstBySourceAndExternalId`로 재조회해 합류할 수 있다. `INSERT ...
+   ON CONFLICT`(native SQL)는 검토했으나 기각 — 이 프로젝트가 지금까지 native
+   SQL을 쓴 적이 없고, 결과 row를 다시 로드하는 후속 조회가 어차피 필요해
+   왕복이 줄지도 않으며, `@CreationTimestamp` 같은 Hibernate 콜백이 native
+   insert 경로에서 동작하지 않아 별도 처리가 필요해진다.
+3. **JVM in-process 단일 run lock 병행 채택**(`ReentrantLock.tryLock()`,
+   non-blocking, `AlioCollectorService.collect()` 전체를 감쌈). DB UNIQUE만
+   으로도 데이터 무결성은 완전히 보장되므로 이 lock은 correctness의 필수
+   조건이 **아니다** — 외부 ALIO API(`list.do`/`detail.do`) 중복 호출과
+   부하를 줄이는 optimization이며, `collect()` 전체(목록 순회 + inline
+   detail enrichment 포함)를 직렬화해 아래 4번의 detail enrichment race
+   창을 사실상 닫는 부수효과도 있다. 락 경합 시(즉 이미 다른 run이 실행
+   중일 때) 수동 API는 **즉시 HTTP 409**를 반환하고(`AlioCollectionInProgressException`),
+   Scheduler는 이를 `failure`가 아니라 별도 `skipped` 결과로 집계한다
+   (정상적인 경쟁 상황이지 장애가 아니므로).
+4. **`AlioDetailEnrichmentService`의 동시성 race는 이번 Task에서 다루지
+   않는다.** 같은 미보강 공고를 두 run이 동시에 발견하면 `detail.do` 중복
+   호출 + `persistDetail()` 트랜잭션 전체 롤백으로 `detailFetchedAt` 갱신이
+   지연될 수 있다(기존 COLLECT-004 UNIQUE 제약 덕분에 데이터 손상 자체는
+   없음). 진짜 고치려면 `persistDetail()`의 트랜잭션 경계를 step/file
+   단위로 재구조화해야 하는데, PostgreSQL은 트랜잭션 안에서 한 statement가
+   실패하면 그 트랜잭션 전체가 aborted 상태가 되어 같은 트랜잭션 안에서
+   catch-and-continue가 불가능하다 — 즉 "작은 수정"이 아니라
+   `AlioDetailEnrichmentService`의 트랜잭션 구조 자체를 바꾸는 별도 범위다.
+   후속 Task 후보로 `docs/ROADMAP.md`에 남긴다.
+
+**대안**:
+- **DB UNIQUE만, run lock 없음** — 기각(부분적, 사용자 선택). correctness는
+  동일하게 보장되지만 겹침이 실제로 발생하면 `list.do`/`detail.do` 중복
+  호출과 detail enrichment race 창이 그대로 남는다. 사용자가 optimization
+  가치를 인정해 run lock을 함께 채택하기로 결정.
+- **분산 락(ShedLock, Redis 등)** — 기각. 현재 단일 인스턴스 MVP(ADR-0011과
+  동일 근거)이고, `ReentrantLock`으로 단일 인스턴스 내 상호 배제는 충분하다.
+- **수동 API가 락 경합 시 대기(블로킹)하거나 "실행 중" 상태를 응답에
+  명시** — 기각(사용자 선택, 즉시 거절/409 채택). 대기는 5,000건 처리 중
+  HTTP 요청이 수십 초~수 분 걸릴 수 있고, 응답에 상태 필드를 추가하는
+  것은 기존 `CollectResult` 계약을 변경해야 해서 즉시 거절이 가장 단순하고
+  명확하다고 판단했다.
+
+**이유**: correctness(DB UNIQUE)와 optimization(run lock)을 명확히 분리해서
+설계했다 — 하나가 실패해도 다른 하나가 데이터 무결성을 지킨다. 실제
+transaction boundary를 추측 없이 코드로 직접 확인한 뒤 exception catch/
+re-read를 선택해 기존 100% JPA 기반 아키텍처와 native SQL 도입 없이
+문제를 해결했다.
+
+**영향**: `POST /api/collect/alio`는 이제 다른 collection run이 진행 중이면
+HTTP 409를 반환할 수 있다(신규 API 계약, 기존 200/400/502는 변경 없음).
+`AlioDetailEnrichmentService`의 동시성 취약점은 데이터 손상 위험 없이
+남아 있으며, 트랜잭션 재구조화가 필요한 후속 Task로 `docs/ROADMAP.md`에
+기록한다.

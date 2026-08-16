@@ -2,6 +2,8 @@ package com.careerops.backend.collector;
 
 import com.careerops.backend.collector.alio.AlioApiException;
 import com.careerops.backend.collector.alio.AlioCollectionScheduler;
+import com.careerops.backend.collector.alio.AlioCollectorService;
+import com.careerops.backend.collector.alio.AlioJobListResponse;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +13,12 @@ import org.springframework.test.annotation.Rollback;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
+
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -30,6 +38,7 @@ class AlioCollectionSchedulerTest {
     @Autowired private FixtureAlioJobClient client;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private MeterRegistry meterRegistry;
+    @Autowired private AlioCollectorService collectorService;
 
     @Test
     void collectsAndRecordsSuccessfulRunMetrics() throws Exception {
@@ -88,6 +97,29 @@ class AlioCollectionSchedulerTest {
         scheduler.collect();
 
         assertThat(client.lastNumOfRows()).isEqualTo(10);
+    }
+
+    @Test
+    void recordsLockContentionAsSkippedInsteadOfFailure() throws Exception {
+        client.respondWith(new AlioJobListResponse(List.of(), "200", "성공", 0));
+        client.blockNextFetch();
+        double failureBefore = counter("careerops.scheduler.alio.run", "result", "failure");
+        double skippedBefore = counter("careerops.scheduler.alio.run", "result", "skipped");
+
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<CollectResult> running = executor.submit(() -> collectorService.collect(1));
+            assertThat(client.awaitFetchEntered()).isTrue();
+
+            assertThatCode(scheduler::collect).doesNotThrowAnyException();
+
+            client.releaseBlockedFetch();
+            assertThat(running.get(5, TimeUnit.SECONDS).result()).isEqualTo("success");
+        } finally {
+            client.releaseBlockedFetch();
+        }
+
+        assertThat(counter("careerops.scheduler.alio.run", "result", "failure")).isEqualTo(failureBefore);
+        assertThat(counter("careerops.scheduler.alio.run", "result", "skipped")).isEqualTo(skippedBefore + 1);
     }
 
     private double counter(String name, String... tags) {

@@ -5,20 +5,24 @@ import com.careerops.backend.collector.alio.AlioJobClient;
 import com.careerops.backend.collector.alio.AlioJobListResponse;
 import com.careerops.backend.collector.alio.AlioJobDetailResponse;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 final class FixtureAlioJobClient implements AlioJobClient {
 
     record ListCall(int pageNo, int numOfRows) {}
 
-    private AlioJobListResponse response;
-    private AlioApiException exception;
-    private Integer lastNumOfRows;
+    private volatile AlioJobListResponse response;
+    private volatile AlioApiException exception;
+    private volatile Integer lastNumOfRows;
     private final Map<Integer, AlioJobListResponse> pageResponses = new HashMap<>();
     private final Map<Integer, AlioApiException> pageFailures = new HashMap<>();
-    private final List<ListCall> capturedCalls = new ArrayList<>();
+    private final List<ListCall> capturedCalls = Collections.synchronizedList(new ArrayList<>());
     private final Map<Long, AlioJobDetailResponse> detailResponses = new HashMap<>();
     private final Map<Long, AlioApiException> detailFailures = new HashMap<>();
-    private final List<Long> capturedDetailSns = new ArrayList<>();
+    private final List<Long> capturedDetailSns = Collections.synchronizedList(new ArrayList<>());
+    private volatile CountDownLatch fetchEntered;
+    private volatile CountDownLatch fetchRelease;
 
     void respondWith(AlioJobListResponse response) {
         this.response = response;
@@ -48,6 +52,7 @@ final class FixtureAlioJobClient implements AlioJobClient {
     }
 
     void resetList() {
+        releaseBlockedFetch();
         response = null;
         exception = null;
         lastNumOfRows = null;
@@ -60,6 +65,19 @@ final class FixtureAlioJobClient implements AlioJobClient {
     public AlioJobListResponse fetchList(int pageNo, int numOfRows) {
         this.lastNumOfRows = numOfRows;
         this.capturedCalls.add(new ListCall(pageNo, numOfRows));
+        CountDownLatch entered = fetchEntered;
+        CountDownLatch release = fetchRelease;
+        if (entered != null && release != null) {
+            entered.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Timed out waiting to release fixture list fetch");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting to release fixture list fetch", exception);
+            }
+        }
         if (exception != null) {
             throw exception;
         }
@@ -87,4 +105,20 @@ final class FixtureAlioJobClient implements AlioJobClient {
     }
 
     List<ListCall> capturedCalls() { return List.copyOf(capturedCalls); }
+
+    void blockNextFetch() {
+        fetchEntered = new CountDownLatch(1);
+        fetchRelease = new CountDownLatch(1);
+    }
+
+    boolean awaitFetchEntered() throws InterruptedException {
+        return fetchEntered != null && fetchEntered.await(5, TimeUnit.SECONDS);
+    }
+
+    void releaseBlockedFetch() {
+        CountDownLatch release = fetchRelease;
+        if (release != null) release.countDown();
+        fetchEntered = null;
+        fetchRelease = null;
+    }
 }

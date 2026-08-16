@@ -91,7 +91,8 @@ Prometheus label cardinality가 무한정 늘어날 위험이 있다. 출처가 
 
 | 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
 |---|---|---|---|---|---|
-| `careerops_collector_run_total` | `careerops.collector.run` | Counter | `source`, `result`=`success`\|`failed` | 수집 실행(수동 트리거 1회, `POST /api/collect/{source}`) 자체의 성공/실패 분포. `failed`는 외부 API 호출/응답 파싱 자체가 실패해 수집이 중단된 경우(개별 item의 `invalid_item` 실패는 포함하지 않음 — 그 경우 run은 `success`로 집계됨) | `AlioCollectorService` — 실행 종료 시점 |
+| `careerops_collector_run_total` | `careerops.collector.run` | Counter | `source`, `result`=`success`\|`failed`\|`skipped_locked` | 수집 실행(수동 트리거 1회, `POST /api/collect/{source}`) 자체의 성공/실패/락 경합 분포. `failed`는 외부 API 호출/응답 파싱 자체가 실패해 수집이 중단된 경우, `skipped_locked`는 다른 수집이 진행 중이라 즉시 거절된 경우다 | `AlioCollectorService` — 실행 종료 또는 락 획득 실패 시점 |
+| `careerops_collector_conflict_total` | `careerops.collector.conflict` | Counter | `source` | 동일 `(source, external_id)` 동시 INSERT가 DB UNIQUE 제약과 충돌해 기존 canonical row로 합류한 횟수 | `JobPostingService.createOrGetExisting()` |
 | `careerops_collector_pages_total` | `careerops.collector.pages` | Counter | `source` | 목록 API pagination이 실제 순회한 성공 페이지 수를 관찰해 범위 밖 공고 누락 여부를 확인 | `AlioCollectorService` — 페이지 응답 수신 직후 |
 | `careerops_collector_fetched_total` | `careerops.collector.fetched` | Counter | `source` | 외부 API로부터 수신한 원본 항목(item) 수 누적(저장 여부 무관) | `AlioCollectorService` — 응답 수신 직후 |
 | `careerops_collector_saved_total` | `careerops.collector.saved` | Counter | `source` | **이 collector 실행으로 새로 저장된** `JobPosting` 수 누적(중복 skip, 필수 필드 누락은 제외) | `AlioCollectorService` — 개별 저장 성공 시 |
@@ -112,7 +113,7 @@ Prometheus label cardinality가 무한정 늘어날 위험이 있다. 출처가 
 
 | 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
 |---|---|---|---|---|---|
-| `careerops_scheduler_alio_run_total` | `careerops.scheduler.alio.run` | Counter | `result`=`success`\|`failure` | ALIO 자동 수집(Scheduler) 실행 자체의 성공/실패 횟수(개별 item 실패는 포함 안 함 — `collect()` 호출 자체가 예외 없이 끝나면 success) | `AlioCollectionScheduler` — 실행 종료 시점 |
+| `careerops_scheduler_alio_run_total` | `careerops.scheduler.alio.run` | Counter | `result`=`success`\|`failure`\|`skipped` | ALIO 자동 수집(Scheduler) 실행 자체의 성공/실패/락 경합 skip 횟수(개별 item 실패는 포함 안 함 — `collect()` 호출 자체가 예외 없이 끝나면 success) | `AlioCollectionScheduler` — 실행 종료 시점 |
 | `careerops_scheduler_alio_duration_seconds` | `careerops.scheduler.alio.duration` | Timer | 없음 | 1회 실행 소요 시간 | `AlioCollectionScheduler` — 실행 전체 |
 | `careerops_scheduler_alio_fetched_total` | `careerops.scheduler.alio.fetched` | Counter | 없음 | Scheduler 실행으로 수집한 원본 item 수 누적 | `AlioCollectionScheduler` — 성공 실행 후 |
 | `careerops_scheduler_alio_saved_total` | `careerops.scheduler.alio.saved` | Counter | 없음 | Scheduler 실행으로 신규 저장된 건수 누적 | `AlioCollectionScheduler` — 성공 실행 후 |

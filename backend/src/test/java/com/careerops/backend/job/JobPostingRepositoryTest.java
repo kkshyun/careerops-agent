@@ -8,8 +8,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 
 import java.time.LocalDate;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -73,6 +75,19 @@ class JobPostingRepositoryTest {
     }
 
     @Test
+    void rejectsDuplicateSourceAndExternalId() {
+        repository.saveAndFlush(new JobPosting(
+                "기관1", "공고1", null, null, null, null, null, null, null,
+                null, null, "ALIO", null, "unique-constraint-test"
+        ));
+
+        assertThatThrownBy(() -> repository.saveAndFlush(new JobPosting(
+                "기관2", "공고2", null, null, null, null, null, null, null,
+                null, null, "ALIO", null, "unique-constraint-test"
+        ))).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void searchesByEachFilterAndCombinesFiltersWithAnd() {
         JobPosting matching = save("한국전력공사", "OPEN", "신입+경력", "정보기술,경영·행정·사무",
                 LocalDate.of(2026, 8, 20));
@@ -126,7 +141,7 @@ class JobPostingRepositoryTest {
             String companyName, String status, String careerLevel, String jobCategory, LocalDate applicationEndAt) {
         return repository.save(new JobPosting(
                 companyName, "공고", null, careerLevel, null, status, null, jobCategory, null,
-                null, applicationEndAt, "ALIO", null, companyName
+                null, applicationEndAt, "ALIO", null, java.util.UUID.randomUUID().toString()
         ));
     }
 }

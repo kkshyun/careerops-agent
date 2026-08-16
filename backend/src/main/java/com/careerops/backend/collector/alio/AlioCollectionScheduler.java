@@ -47,6 +47,9 @@ public class AlioCollectionScheduler {
             counter("updated").increment(result.updated());
             counter("failed").increment(result.failed());
             runCounter("success").increment();
+        } catch (AlioCollectionInProgressException exception) {
+            runCounter("skipped").increment();
+            log.info("Scheduled ALIO collection skipped because another collection is in progress");
         } catch (AlioApiException exception) {
             runCounter("failure").increment();
             log.warn("Scheduled ALIO collection failed: reason={}", exception.reason(), exception);

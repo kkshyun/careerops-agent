@@ -103,6 +103,40 @@
       발생하는 것을 피함). `careerops.collector.pages` metric 신설. 58/58
       테스트 통과(`.ai/tasks/COLLECT-005.md`).
 
+## Phase 7 — 동시 수집 race 방지(DB 무결성) (완료)
+
+목표: COLLECT-005 실 API 검증 중 실제로 재현된 동시 수집 race(수동 API와
+Scheduler가 동시 실행되며 동일 `(source, external_id)`의 `JobPosting`이
+중복 저장)를 DB 수준에서 근본적으로 막고, 애플리케이션이 그 충돌을 정상
+처리하도록 만든다.
+
+- [x] COLLECT-006 — `job_postings(source, external_id)` DB UNIQUE 제약
+      (`uk_job_postings_source_external_id`, 데이터 정리 SQL 없음 — 다른
+      환경에 실제 중복이 있으면 migration이 실패해야 함) 추가.
+      `JobPostingService.createOrGetExisting()`이 unique violation을
+      catch해 canonical row로 합류(이 프로젝트 전체에 `@Transactional`이
+      없어 `repository.save()`가 독립된 짧은 트랜잭션으로 끝난다는 것을
+      코드로 직접 확인한 뒤 exception catch/re-read 채택, native SQL/`ON
+      CONFLICT` 도입 안 함 — ADR-0015). `AlioCollectorService.collect()`
+      전체를 감싸는 JVM in-process `ReentrantLock`(non-blocking) 병행
+      도입 — correctness의 필수 조건은 아니고 외부 API 중복 호출을 줄이는
+      optimization. 락 경합 시 수동 API는 HTTP 409, Scheduler는 `failure`
+      아닌 `skipped` 집계. `careerops.collector.conflict` metric 신설.
+      64/64 테스트 통과(`.ai/tasks/COLLECT-006.md`).
+
+### Phase 7 이후 후보
+
+- **`AlioDetailEnrichmentService` 트랜잭션 재구조화(동시성 강화)** — 같은
+  미보강 공고를 두 run이 동시에 발견하면 `detail.do` 중복 호출+
+  `persistDetail()` 트랜잭션 전체 롤백으로 `detailFetchedAt` 갱신이
+  지연될 수 있다(기존 COLLECT-004 UNIQUE 제약 덕분에 데이터 손상 자체는
+  없음). 진짜 고치려면 `persistDetail()`의 트랜잭션 경계를 step/file
+  단위로 재구조화해야 하는데, PostgreSQL은 트랜잭션 안에서 한 statement가
+  실패하면 그 트랜잭션 전체가 aborted 상태가 되어 같은 트랜잭션 안에서
+  catch-and-continue가 불가능해 "작은 수정"으로 끝나지 않는다(COLLECT-006/
+  ADR-0015). COLLECT-006의 run-level lock이 이 race의 발생 창을 사실상
+  닫아 우선순위가 낮아졌지만, 완전히 해소된 것은 아니다.
+
 ### Phase 6 이후 후보
 
 - **다중 인스턴스 분산 Scheduler**(ShedLock 등) — 현재 단일 인스턴스

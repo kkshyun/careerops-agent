@@ -1,6 +1,8 @@
 package com.careerops.backend.collector;
 
 import com.careerops.backend.collector.alio.AlioApiException;
+import com.careerops.backend.collector.alio.AlioCollectorService;
+import com.careerops.backend.collector.alio.AlioJobListResponse;
 import com.careerops.backend.job.JobPostingRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,12 @@ import org.springframework.test.annotation.Rollback;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
+
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -30,6 +38,7 @@ class CollectControllerTest {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private JobPostingRepository repository;
     @Autowired private MeterRegistry meterRegistry;
+    @Autowired private AlioCollectorService collectorService;
 
     @Test
     void collectsAlioCaseInsensitively() throws Exception {
@@ -69,5 +78,26 @@ class CollectControllerTest {
                 .andExpect(status().isBadRequest());
 
         assertThat(repository.count()).isEqualTo(rowsBefore);
+    }
+
+    @Test
+    void returnsConflictWithoutSavingWhenCollectionIsAlreadyRunning() throws Exception {
+        client.respondWith(new AlioJobListResponse(List.of(), "200", "성공", 0));
+        client.blockNextFetch();
+        long rowsBefore = repository.count();
+
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<CollectResult> running = executor.submit(() -> collectorService.collect(1));
+            assertThat(client.awaitFetchEntered()).isTrue();
+
+            mockMvc.perform(post("/api/collect/alio").param("numOfRows", "1"))
+                    .andExpect(status().isConflict());
+            assertThat(repository.count()).isEqualTo(rowsBefore);
+
+            client.releaseBlockedFetch();
+            assertThat(running.get(5, TimeUnit.SECONDS).result()).isEqualTo("success");
+        } finally {
+            client.releaseBlockedFetch();
+        }
     }
 }

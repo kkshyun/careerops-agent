@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 public class AlioCollectorService {
@@ -33,6 +34,7 @@ public class AlioCollectorService {
     private final Counter savedCounter;
     private final Counter pagesCounter;
     private final AlioDetailEnrichmentService detailEnrichmentService;
+    private final ReentrantLock collectionLock = new ReentrantLock();
 
     public AlioCollectorService(
             AlioJobClient client,
@@ -54,6 +56,18 @@ public class AlioCollectorService {
     }
 
     public CollectResult collect(int numOfRows) {
+        if (!collectionLock.tryLock()) {
+            runCounter("skipped_locked").increment();
+            throw new AlioCollectionInProgressException();
+        }
+        try {
+            return collectLocked(numOfRows);
+        } finally {
+            collectionLock.unlock();
+        }
+    }
+
+    private CollectResult collectLocked(int numOfRows) {
         int pageSize = Math.min(numOfRows, MAX_PAGE_SIZE);
         int pageNo = 1;
         int maxPages = Integer.MAX_VALUE;
@@ -94,20 +108,23 @@ public class AlioCollectorService {
                 }
                 var existing = repository.findFirstBySourceAndExternalId(request.source(), request.externalId());
                 if (existing.isPresent()) {
-                    JobPosting jobPosting = existing.get();
-                    if (Objects.equals(jobPosting.getStatus(), request.status())) {
-                        skipped++;
-                    } else {
-                        jobPostingService.updateStatus(jobPosting, request.status());
+                    if (handleExisting(existing.get(), request)) {
                         updated++;
+                    } else {
+                        skipped++;
                     }
-                    enrichIfNeeded(jobPosting);
                     continue;
                 }
-                JobPosting jobPosting = jobPostingService.create(request);
-                saved++;
-                savedCounter.increment();
-                enrichIfNeeded(jobPosting);
+                JobPostingService.CreateOutcome outcome = jobPostingService.createOrGetExisting(request);
+                if (outcome.isNew()) {
+                    saved++;
+                    savedCounter.increment();
+                    enrichIfNeeded(outcome.jobPosting());
+                } else if (handleExisting(outcome.jobPosting(), request)) {
+                    updated++;
+                } else {
+                    skipped++;
+                }
             }
 
             if (fetched >= numOfRows || items.size() < pageSize) {
@@ -123,6 +140,15 @@ public class AlioCollectorService {
 
         runCounter("success").increment();
         return new CollectResult("ALIO", fetched, saved, skipped, updated, failed, "success");
+    }
+
+    private boolean handleExisting(JobPosting jobPosting, JobPostingCreateRequest request) {
+        boolean updated = !Objects.equals(jobPosting.getStatus(), request.status());
+        if (updated) {
+            jobPostingService.updateStatus(jobPosting, request.status());
+        }
+        enrichIfNeeded(jobPosting);
+        return updated;
     }
 
     private AlioJobListResponse fetchPage(int pageNo, int pageSize) {

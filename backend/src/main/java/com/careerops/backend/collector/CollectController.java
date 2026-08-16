@@ -2,6 +2,7 @@ package com.careerops.backend.collector;
 
 import com.careerops.backend.collector.alio.AlioApiException;
 import com.careerops.backend.collector.alio.AlioCollectorService;
+import com.careerops.backend.collector.alio.AlioCollectionInProgressException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,6 +31,8 @@ public class CollectController {
         }
         try {
             return alioCollectorService.collect(numOfRows);
+        } catch (AlioCollectionInProgressException exception) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "ALIO collection already in progress");
         } catch (AlioApiException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "ALIO API request failed", exception);
         }
