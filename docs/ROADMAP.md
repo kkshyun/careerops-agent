@@ -124,6 +124,30 @@ Scheduler가 동시 실행되며 동일 `(source, external_id)`의 `JobPosting`�
       아닌 `skipped` 집계. `careerops.collector.conflict` metric 신설.
       64/64 테스트 통과(`.ai/tasks/COLLECT-006.md`).
 
+## Phase 8 — JobPosting 상세조회 API에 recruitmentSteps/attachments 노출 (완료)
+
+목표: COLLECT-004부터 DB에 저장되고 있지만 조회 API로는 노출되지 않던
+`RecruitmentStep`/`Attachment`(ADR-0013에서 의도적으로 미노출)를
+`GET /api/jobs/{id}` 상세조회 응답에 포함한다. `GET /api/jobs` 목록/검색
+응답은 payload 비대화를 막기 위해 변경하지 않는다. 수집 인프라(ALIO 연동/
+Scheduler/enrichment)는 이번 Phase에서 전혀 손대지 않는다.
+
+- [x] JOB-003 — `JobPostingDetailResponse`(기존 `JobPostingResponse` 필드 +
+      `recruitmentSteps`/`attachments`) 신설, `RecruitmentStepResponse`(6필드:
+      `sortNo`/`stepGroupName`/`competitionRate`/`applicantCount`/
+      `recruitCount`/`occurredAtRaw`)/`AttachmentResponse`(4필드: `sortNo`/
+      `fileName`/`fileType`/`url`) 신설 — ALIO 내부 식별값(`recrutStepSn`/
+      `minStepSn`/`maxStepSn`/`recrutAtchFileNo`)과 엔티티 PK는 노출하지
+      않기로 사용자 승인. 정렬은 `sortNo ASC` + 동일 `sortNo` 내 ALIO
+      natural key(`recrutStepSn`/`recrutAtchFileNo`) ASC를 Repository 파생
+      쿼리로 명시(DB 조회 순서 의존 없음). `JobPostingService.findById()`를
+      확장해 3-query 조합(기존 목록 `search()` 경로는 무변경, N+1 없음)으로
+      Controller/Repository 계층을 그대로 재사용, 새 Query Service 계층은
+      만들지 않음. 신규 migration/metric 없음(기존 V3 스키마 + 기존
+      `careerops.job.read` 카운터로 충분). 66/66 테스트 통과 + 실제 dev DB
+      ALIO 공고(id=182)로 정렬/필드노출범위 수동 검증 완료
+      (`.ai/tasks/JOB-003.md`).
+
 ### Phase 7 이후 후보
 
 - **`AlioDetailEnrichmentService` 트랜잭션 재구조화(동시성 강화)** — 같은
@@ -141,9 +165,6 @@ Scheduler가 동시 실행되며 동일 `(source, external_id)`의 `JobPosting`�
 
 - **다중 인스턴스 분산 Scheduler**(ShedLock 등) — 현재 단일 인스턴스
   전제. 여러 인스턴스로 확장하는 시점에 ADR-0011 "영향" 절 참고해 재설계.
-- **`GET /api/jobs` 응답에 steps/attachments 노출** — COLLECT-004는 저장까지만
-  다루고 조회 API는 의도적으로 변경하지 않았다(ADR-0013). 실사용에서
-  필요성이 확인되면 별도 Task.
 - **전체 112,920건 히스토리 백필** — COLLECT-005로 pagination 자체는
   정확히 동작하지만, Scheduler는 매 6시간 최근 5,000건만 훑는다(ADR-0014).
   그보다 오래된 과거 공고는 여전히 미보강 상태로 남을 수 있다 — 전체

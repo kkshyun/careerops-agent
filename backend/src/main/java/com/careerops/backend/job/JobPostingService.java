@@ -1,8 +1,8 @@
 package com.careerops.backend.job;
 
 import com.careerops.backend.job.dto.JobPostingCreateRequest;
+import com.careerops.backend.job.dto.JobPostingDetailResponse;
 import com.careerops.backend.job.dto.JobPostingListResponse;
-import com.careerops.backend.job.dto.JobPostingResponse;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.http.HttpStatus;
@@ -16,13 +16,21 @@ import org.springframework.web.server.ResponseStatusException;
 public class JobPostingService {
 
     private final JobPostingRepository repository;
+    private final RecruitmentStepRepository recruitmentStepRepository;
+    private final AttachmentRepository attachmentRepository;
     private final Counter createdCounter;
     private final Counter foundCounter;
     private final Counter notFoundCounter;
     private final Counter conflictCounter;
 
-    public JobPostingService(JobPostingRepository repository, MeterRegistry meterRegistry) {
+    public JobPostingService(
+            JobPostingRepository repository,
+            RecruitmentStepRepository recruitmentStepRepository,
+            AttachmentRepository attachmentRepository,
+            MeterRegistry meterRegistry) {
         this.repository = repository;
+        this.recruitmentStepRepository = recruitmentStepRepository;
+        this.attachmentRepository = attachmentRepository;
         this.createdCounter = Counter.builder("careerops.job.creation").register(meterRegistry);
         this.foundCounter = Counter.builder("careerops.job.read").tag("result", "found").register(meterRegistry);
         this.notFoundCounter = Counter.builder("careerops.job.read").tag("result", "not_found").register(meterRegistry);
@@ -67,16 +75,20 @@ public class JobPostingService {
         repository.save(jobPosting);
     }
 
-    public JobPostingResponse findById(Long id) {
-        return repository.findById(id)
-                .map(jobPosting -> {
+    public JobPostingDetailResponse findById(Long id) {
+        JobPosting jobPosting = repository.findById(id)
+                .map(posting -> {
                     foundCounter.increment();
-                    return JobPostingResponse.from(jobPosting);
+                    return posting;
                 })
                 .orElseThrow(() -> {
                     notFoundCounter.increment();
                     return new ResponseStatusException(HttpStatus.NOT_FOUND);
                 });
+        return JobPostingDetailResponse.from(
+                jobPosting,
+                recruitmentStepRepository.findByJobPostingIdOrderBySortNoAscRecrutStepSnAsc(id),
+                attachmentRepository.findByJobPostingIdOrderBySortNoAscRecrutAtchFileNoAsc(id));
     }
 
     public JobPostingListResponse search(

@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-**Phase 6 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 8 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
@@ -181,7 +181,16 @@ catch해 canonical row로 안전하게 합류하도록 했다(이 프로젝트 �
 409를, Scheduler는 `failure`가 아닌 `skipped` 집계로 처리한다.
 `AlioDetailEnrichmentService`의 유사한 동시성 취약점(데이터 손상 위험은
 없음)은 트랜잭션 구조 재설계가 필요해 이번 Phase에서 다루지 않고 후속
-Task 후보로 남겼다. 나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
+Task 후보로 남겼다. JOB-003은 COLLECT-004부터 저장만 되고 조회 API로는
+노출되지 않던(ADR-0013) `RecruitmentStep`/`Attachment`를
+`GET /api/jobs/{id}` 상세조회 응답에 추가했다 — `JobPostingDetailResponse`/
+`RecruitmentStepResponse`/`AttachmentResponse` 신규 DTO 3개로 ALIO 내부
+식별값(자연키)과 엔티티 PK는 노출하지 않고 클라이언트가 쓸 필드만 선별
+노출하며, 정렬은 `sortNo ASC` + 자연키 ASC를 Repository 파생 쿼리로 명시
+고정했다. `GET /api/jobs` 목록 응답은 payload 비대화를 막기 위해 그대로
+두었고, `JobPostingService.findById()`를 확장하는 3-query 구조만으로
+새 Query Service 계층 없이 구현했다(migration/metric 신규 추가 없음).
+나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
 
 ## 시스템 구성 (개략, 미확정)

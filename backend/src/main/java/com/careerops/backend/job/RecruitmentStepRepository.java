@@ -6,4 +6,5 @@ import java.util.List;
 public interface RecruitmentStepRepository extends JpaRepository<RecruitmentStep, Long> {
     boolean existsByRecrutStepSn(Long recrutStepSn);
     List<RecruitmentStep> findByJobPostingId(Long jobPostingId);
+    List<RecruitmentStep> findByJobPostingIdOrderBySortNoAscRecrutStepSnAsc(Long jobPostingId);
 }

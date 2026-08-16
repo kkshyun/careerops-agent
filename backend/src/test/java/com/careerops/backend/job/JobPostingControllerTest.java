@@ -31,6 +31,12 @@ class JobPostingControllerTest {
     private JobPostingRepository repository;
 
     @Autowired
+    private RecruitmentStepRepository recruitmentStepRepository;
+
+    @Autowired
+    private AttachmentRepository attachmentRepository;
+
+    @Autowired
     private MeterRegistry meterRegistry;
 
     @Test
@@ -94,7 +100,61 @@ class JobPostingControllerTest {
                 .andExpect(jsonPath("$.status").value("OPEN"))
                 .andExpect(jsonPath("$.institutionCode").value("B001"))
                 .andExpect(jsonPath("$.source").value("MANUAL"))
-                .andExpect(jsonPath("$.createdAt").isNotEmpty());
+                .andExpect(jsonPath("$.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.recruitmentSteps").isEmpty())
+                .andExpect(jsonPath("$.attachments").isEmpty());
+    }
+
+    @Test
+    void getsRecruitmentStepsAndAttachmentsWithPublicFieldsInStableOrder() throws Exception {
+        JobPosting saved = save("상세기관", "OPEN", "신입", "정보기술", LocalDate.of(2026, 8, 31));
+        recruitmentStepRepository.saveAllAndFlush(java.util.List.of(
+                new RecruitmentStep(saved, 9002L, 1, 1L, 2L, "면접", 3.5, 35, 10, "2026-08-20"),
+                new RecruitmentStep(saved, 9001L, 1, 1L, 2L, "서류", 5.0, 50, 10, "2026-08-10")
+        ));
+        attachmentRepository.saveAllAndFlush(java.util.List.of(
+                new Attachment(saved, 8002L, 1, "두번째.pdf", "PDF", "https://example.com/second.pdf"),
+                new Attachment(saved, 8001L, 1, "첫번째.hwp", "HWP", "https://example.com/first.hwp")
+        ));
+
+        mockMvc.perform(get("/api/jobs/{id}", saved.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recruitmentSteps.length()").value(2))
+                .andExpect(jsonPath("$.recruitmentSteps[0].stepGroupName").value("서류"))
+                .andExpect(jsonPath("$.recruitmentSteps[0].sortNo").value(1))
+                .andExpect(jsonPath("$.recruitmentSteps[0].competitionRate").value(5.0))
+                .andExpect(jsonPath("$.recruitmentSteps[0].applicantCount").value(50))
+                .andExpect(jsonPath("$.recruitmentSteps[0].recruitCount").value(10))
+                .andExpect(jsonPath("$.recruitmentSteps[0].occurredAtRaw").value("2026-08-10"))
+                .andExpect(jsonPath("$.recruitmentSteps[0].id").doesNotExist())
+                .andExpect(jsonPath("$.recruitmentSteps[0].recrutStepSn").doesNotExist())
+                .andExpect(jsonPath("$.recruitmentSteps[0].minStepSn").doesNotExist())
+                .andExpect(jsonPath("$.recruitmentSteps[0].maxStepSn").doesNotExist())
+                .andExpect(jsonPath("$.recruitmentSteps[0].jobPosting").doesNotExist())
+                .andExpect(jsonPath("$.recruitmentSteps[0].createdAt").doesNotExist())
+                .andExpect(jsonPath("$.recruitmentSteps[1].stepGroupName").value("면접"))
+                .andExpect(jsonPath("$.attachments.length()").value(2))
+                .andExpect(jsonPath("$.attachments[0].fileName").value("첫번째.hwp"))
+                .andExpect(jsonPath("$.attachments[0].sortNo").value(1))
+                .andExpect(jsonPath("$.attachments[0].fileType").value("HWP"))
+                .andExpect(jsonPath("$.attachments[0].url").value("https://example.com/first.hwp"))
+                .andExpect(jsonPath("$.attachments[0].id").doesNotExist())
+                .andExpect(jsonPath("$.attachments[0].recrutAtchFileNo").doesNotExist())
+                .andExpect(jsonPath("$.attachments[0].jobPosting").doesNotExist())
+                .andExpect(jsonPath("$.attachments[0].createdAt").doesNotExist())
+                .andExpect(jsonPath("$.attachments[1].fileName").value("두번째.pdf"));
+    }
+
+    @Test
+    void getsEmptyDetailArraysForAlioJobWithoutDetails() throws Exception {
+        JobPosting saved = save("미보강기관", "OPEN", "신입", "정보기술", LocalDate.of(2026, 8, 31));
+
+        mockMvc.perform(get("/api/jobs/{id}", saved.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recruitmentSteps").isArray())
+                .andExpect(jsonPath("$.recruitmentSteps").isEmpty())
+                .andExpect(jsonPath("$.attachments").isArray())
+                .andExpect(jsonPath("$.attachments").isEmpty());
     }
 
     @Test
@@ -125,6 +185,8 @@ class JobPostingControllerTest {
                 .andExpect(jsonPath("$.content[0].title").value("공고"))
                 .andExpect(jsonPath("$.content[0].status").value("OPEN"))
                 .andExpect(jsonPath("$.content[0].createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.content[0].recruitmentSteps").doesNotExist())
+                .andExpect(jsonPath("$.content[0].attachments").doesNotExist())
                 .andExpect(jsonPath("$.totalElements").value(2))
                 .andExpect(jsonPath("$.totalPages").value(1))
                 .andExpect(jsonPath("$.page").value(0))

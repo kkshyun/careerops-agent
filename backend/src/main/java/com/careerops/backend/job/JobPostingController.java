@@ -1,6 +1,7 @@
 package com.careerops.backend.job;
 
 import com.careerops.backend.job.dto.JobPostingCreateRequest;
+import com.careerops.backend.job.dto.JobPostingDetailResponse;
 import com.careerops.backend.job.dto.JobPostingListResponse;
 import com.careerops.backend.job.dto.JobPostingResponse;
 import jakarta.validation.Valid;
@@ -34,7 +35,7 @@ public class JobPostingController {
     }
 
     @GetMapping("/{id}")
-    public JobPostingResponse findById(@PathVariable Long id) {
+    public JobPostingDetailResponse findById(@PathVariable Long id) {
         return service.findById(id);
     }
 
