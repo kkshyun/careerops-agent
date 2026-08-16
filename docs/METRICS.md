@@ -92,6 +92,7 @@ Prometheus label cardinality가 무한정 늘어날 위험이 있다. 출처가 
 | 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
 |---|---|---|---|---|---|
 | `careerops_collector_run_total` | `careerops.collector.run` | Counter | `source`, `result`=`success`\|`failed` | 수집 실행(수동 트리거 1회, `POST /api/collect/{source}`) 자체의 성공/실패 분포. `failed`는 외부 API 호출/응답 파싱 자체가 실패해 수집이 중단된 경우(개별 item의 `invalid_item` 실패는 포함하지 않음 — 그 경우 run은 `success`로 집계됨) | `AlioCollectorService` — 실행 종료 시점 |
+| `careerops_collector_pages_total` | `careerops.collector.pages` | Counter | `source` | 목록 API pagination이 실제 순회한 성공 페이지 수를 관찰해 범위 밖 공고 누락 여부를 확인 | `AlioCollectorService` — 페이지 응답 수신 직후 |
 | `careerops_collector_fetched_total` | `careerops.collector.fetched` | Counter | `source` | 외부 API로부터 수신한 원본 항목(item) 수 누적(저장 여부 무관) | `AlioCollectorService` — 응답 수신 직후 |
 | `careerops_collector_saved_total` | `careerops.collector.saved` | Counter | `source` | **이 collector 실행으로 새로 저장된** `JobPosting` 수 누적(중복 skip, 필수 필드 누락은 제외) | `AlioCollectorService` — 개별 저장 성공 시 |
 | `careerops_collector_failed_total` | `careerops.collector.failed` | Counter | `source`, `reason`=`fetch_error`\|`parse_error`\|`invalid_item` | 실패 유형별 분포. `reason`은 고정된 소수의 enum만 사용 — raw exception message를 태그로 넣지 않는다(cardinality 제한) | `AlioCollectorService` — 실패 지점별 |

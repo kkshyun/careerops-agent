@@ -27,7 +27,7 @@ careerops:
       enabled: ${CAREEROPS_SCHEDULER_ALIO_ENABLED:true}
       initial-delay: PT1M
       fixed-delay: PT6H
-      num-of-rows: 50
+      num-of-rows: 5000
 
 management:
   endpoints:

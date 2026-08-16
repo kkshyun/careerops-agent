@@ -1,0 +1,9 @@
+{
+  "result": [{
+    "instNm": "페이지 기관 B", "recrutPbancTtl": "페이지 2 채용", "srcUrl": "https://example.invalid/alio/2002",
+    "recrutPblntSn": 2002, "pbancBgngYmd": "20260802", "pbancEndYmd": "20260821", "recrutSeNm": "신입",
+    "hireTypeNmLst": "정규직", "acbgCondNmLst": "학력무관", "ongoingYn": "Y", "pblntInstCd": "P002",
+    "ncsCdNmLst": "정보기술", "workRgnNmLst": "부산"
+  }],
+  "resultCode": 200, "resultMsg": "성공했습니다.", "totalCount": 1001
+}

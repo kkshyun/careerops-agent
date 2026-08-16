@@ -8,9 +8,14 @@ import java.util.*;
 
 final class FixtureAlioJobClient implements AlioJobClient {
 
+    record ListCall(int pageNo, int numOfRows) {}
+
     private AlioJobListResponse response;
     private AlioApiException exception;
     private Integer lastNumOfRows;
+    private final Map<Integer, AlioJobListResponse> pageResponses = new HashMap<>();
+    private final Map<Integer, AlioApiException> pageFailures = new HashMap<>();
+    private final List<ListCall> capturedCalls = new ArrayList<>();
     private final Map<Long, AlioJobDetailResponse> detailResponses = new HashMap<>();
     private final Map<Long, AlioApiException> detailFailures = new HashMap<>();
     private final List<Long> capturedDetailSns = new ArrayList<>();
@@ -18,19 +23,48 @@ final class FixtureAlioJobClient implements AlioJobClient {
     void respondWith(AlioJobListResponse response) {
         this.response = response;
         this.exception = null;
+        this.pageResponses.clear();
+        this.pageFailures.clear();
+        this.capturedCalls.clear();
     }
 
     void failWith(AlioApiException exception) {
         this.exception = exception;
         this.response = null;
+        this.pageResponses.clear();
+        this.pageFailures.clear();
+        this.capturedCalls.clear();
+    }
+
+    void respondToPage(int pageNo, AlioJobListResponse response) {
+        this.exception = null;
+        this.pageResponses.put(pageNo, response);
+        this.pageFailures.remove(pageNo);
+    }
+
+    void failPageWith(int pageNo, AlioApiException exception) {
+        this.pageFailures.put(pageNo, exception);
+        this.pageResponses.remove(pageNo);
+    }
+
+    void resetList() {
+        response = null;
+        exception = null;
+        lastNumOfRows = null;
+        pageResponses.clear();
+        pageFailures.clear();
+        capturedCalls.clear();
     }
 
     @Override
     public AlioJobListResponse fetchList(int pageNo, int numOfRows) {
         this.lastNumOfRows = numOfRows;
+        this.capturedCalls.add(new ListCall(pageNo, numOfRows));
         if (exception != null) {
             throw exception;
         }
+        if (pageFailures.containsKey(pageNo)) throw pageFailures.get(pageNo);
+        if (pageResponses.containsKey(pageNo)) return pageResponses.get(pageNo);
         return response;
     }
 
@@ -51,4 +85,6 @@ final class FixtureAlioJobClient implements AlioJobClient {
     Integer lastNumOfRows() {
         return lastNumOfRows;
     }
+
+    List<ListCall> capturedCalls() { return List.copyOf(capturedCalls); }
 }

@@ -2,6 +2,7 @@ package com.careerops.backend.collector;
 
 import com.careerops.backend.collector.alio.AlioApiException;
 import com.careerops.backend.collector.alio.AlioCollectorService;
+import com.careerops.backend.collector.alio.AlioJobListResponse;
 import com.careerops.backend.job.JobPosting;
 import com.careerops.backend.job.JobPostingRepository;
 import com.careerops.backend.job.RecruitmentStepRepository;
@@ -17,6 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDate;
+import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -37,6 +40,7 @@ class AlioCollectorServiceTest {
 
     @BeforeEach
     void registerDetailFixtures() throws Exception {
+        client.resetList();
         client.resetDetails();
         var detail = AlioFixtureSupport.readDetail(objectMapper, "alio-detail-response-empty.json");
         for (long sn : new long[]{1001, 1002, 2001, 2002, 2003}) client.respondToDetail(sn, detail);
@@ -174,6 +178,135 @@ class AlioCollectorServiceTest {
         assertThat(posting.getStatus()).isEqualTo("CLOSED");
         assertThat(posting.getDetailFetchedAt()).isNotNull();
         assertThat(stepRepository.findByJobPostingId(posting.getId())).hasSize(2);
+    }
+
+    @Test
+    void paginatesWithFixedPageSizeSlicesAtCallerLimitAndRecordsPages() throws Exception {
+        var item = AlioFixtureSupport.read(objectMapper, "alio-list-page-1.json").result().getFirst();
+        var fullPage = response(Collections.nCopies(1000, item), 4000);
+        client.respondToPage(1, fullPage);
+        client.respondToPage(2, fullPage);
+        client.respondToPage(3, fullPage);
+        double pagesBefore = counter("careerops.collector.pages", "source", "alio");
+
+        CollectResult result = service.collect(2500);
+
+        assertThat(result.fetched()).isEqualTo(2500);
+        assertThat(result.saved()).isOne();
+        assertThat(result.skipped()).isEqualTo(2499);
+        assertThat(client.capturedCalls()).containsExactly(
+                new FixtureAlioJobClient.ListCall(1, 1000),
+                new FixtureAlioJobClient.ListCall(2, 1000),
+                new FixtureAlioJobClient.ListCall(3, 1000));
+        assertThat(counter("careerops.collector.pages", "source", "alio")).isEqualTo(pagesBefore + 3);
+    }
+
+    @Test
+    void stopsAfterPartialPageWithoutRequestingAnotherPage() throws Exception {
+        var first = AlioFixtureSupport.read(objectMapper, "alio-list-page-1.json").result().getFirst();
+        var second = AlioFixtureSupport.read(objectMapper, "alio-list-page-2-partial.json").result().getFirst();
+        client.respondToPage(1, response(Collections.nCopies(1000, first), 2000));
+        client.respondToPage(2, response(List.of(second), 2000));
+
+        CollectResult result = service.collect(3000);
+
+        assertThat(result.fetched()).isEqualTo(1001);
+        assertThat(repository.findFirstBySourceAndExternalId("ALIO", "2001").orElseThrow().getDetailFetchedAt())
+                .isNotNull();
+        assertThat(repository.findFirstBySourceAndExternalId("ALIO", "2002").orElseThrow().getDetailFetchedAt())
+                .isNotNull();
+        assertThat(client.capturedDetailSns()).containsExactlyInAnyOrder(2001L, 2002L);
+        assertThat(client.capturedCalls()).extracting(FixtureAlioJobClient.ListCall::pageNo)
+                .containsExactly(1, 2);
+    }
+
+    @Test
+    void stopsAtEmptyPageAndKeepsEarlierResults() throws Exception {
+        var item = AlioFixtureSupport.read(objectMapper, "alio-list-page-1.json").result().getFirst();
+        client.respondToPage(1, response(Collections.nCopies(1000, item), 2000));
+        client.respondToPage(2, AlioFixtureSupport.read(objectMapper, "alio-list-page-empty.json"));
+
+        CollectResult result = service.collect(3000);
+
+        assertThat(result.fetched()).isEqualTo(1000);
+        assertThat(repository.findFirstBySourceAndExternalId("ALIO", "2001")).isPresent();
+        assertThat(client.capturedCalls()).extracting(FixtureAlioJobClient.ListCall::pageNo)
+                .containsExactly(1, 2);
+    }
+
+    @Test
+    void propagatesMiddlePageFailureKeepsCommittedPageWorkAndDoesNotRecordSuccess() throws Exception {
+        var first = AlioFixtureSupport.read(objectMapper, "alio-list-page-1.json").result().getFirst();
+        var second = AlioFixtureSupport.read(objectMapper, "alio-list-page-2-partial.json").result().getFirst();
+        client.respondToPage(1, response(Collections.nCopies(1000, first), 4000));
+        client.respondToPage(2, response(Collections.nCopies(1000, second), 4000));
+        client.failPageWith(3, new AlioApiException(AlioApiException.Reason.FETCH_ERROR, "page 3 failed"));
+        long rowsBefore = repository.count();
+        double failedBefore = counter("careerops.collector.run", "source", "alio", "result", "failed");
+        double successBefore = counter("careerops.collector.run", "source", "alio", "result", "success");
+
+        assertThatThrownBy(() -> service.collect(4000)).isInstanceOf(AlioApiException.class);
+
+        assertThat(repository.count()).isEqualTo(rowsBefore + 2);
+        assertThat(counter("careerops.collector.run", "source", "alio", "result", "failed"))
+                .isEqualTo(failedBefore + 1);
+        assertThat(counter("careerops.collector.run", "source", "alio", "result", "success"))
+                .isEqualTo(successBefore);
+        assertThat(client.capturedCalls()).extracting(FixtureAlioJobClient.ListCall::pageNo)
+                .containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void repeatedMultiPageCollectionDoesNotCreateDuplicatesOrRefetchDetails() throws Exception {
+        var first = AlioFixtureSupport.read(objectMapper, "alio-list-page-1.json").result().getFirst();
+        var second = AlioFixtureSupport.read(objectMapper, "alio-list-page-2-partial.json").result().getFirst();
+        client.respondToPage(1, response(Collections.nCopies(1000, first), 1001));
+        client.respondToPage(2, response(List.of(second), 1001));
+
+        service.collect(3000);
+        long rowsAfterFirst = repository.count();
+        List<Long> detailCallsAfterFirst = client.capturedDetailSns();
+        client.resetList();
+        client.respondToPage(1, response(Collections.nCopies(1000, first), 1001));
+        client.respondToPage(2, response(List.of(second), 1001));
+        service.collect(3000);
+
+        assertThat(repository.count()).isEqualTo(rowsAfterFirst);
+        assertThat(client.capturedDetailSns()).isEqualTo(detailCallsAfterFirst);
+    }
+
+    @Test
+    void updatesExistingStatusWhenPostingAppearsOnLaterPage() throws Exception {
+        var open = AlioFixtureSupport.read(objectMapper, "alio-list-response-valid.json").result().getFirst();
+        JobPosting posting = new JobPosting(
+                open.instNm(), open.recrutPbancTtl(), open.hireTypeNmLst(), open.recrutSeNm(),
+                open.acbgCondNmLst(), "OPEN", open.pblntInstCd(), open.ncsCdNmLst(), open.workRgnNmLst(),
+                LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 20), "ALIO", open.srcUrl(), "1001");
+        repository.save(posting);
+        var filler = AlioFixtureSupport.read(objectMapper, "alio-list-page-1.json").result().getFirst();
+        var closed = AlioFixtureSupport.read(objectMapper, "alio-list-response-closed.json").result().getFirst();
+        client.respondToPage(1, response(Collections.nCopies(1000, filler), 1001));
+        client.respondToPage(2, response(List.of(closed), 1001));
+
+        CollectResult result = service.collect(3000);
+
+        assertThat(result.updated()).isOne();
+        assertThat(posting.getStatus()).isEqualTo("CLOSED");
+        assertThat(client.capturedCalls()).extracting(FixtureAlioJobClient.ListCall::pageNo)
+                .containsExactly(1, 2);
+    }
+
+    @Test
+    void keepsSinglePageCallBackwardCompatible() throws Exception {
+        client.respondWith(AlioFixtureSupport.read(objectMapper, "alio-list-response-valid.json"));
+
+        service.collect(50);
+
+        assertThat(client.capturedCalls()).containsExactly(new FixtureAlioJobClient.ListCall(1, 50));
+    }
+
+    private AlioJobListResponse response(List<com.careerops.backend.collector.alio.AlioJobItem> items, int totalCount) {
+        return new AlioJobListResponse(items, "200", "성공했습니다.", totalCount);
     }
 
     private double counter(String name, String... tags) {

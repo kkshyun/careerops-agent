@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-**Phase 5 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 6 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
@@ -153,7 +153,19 @@ exists 체크 이중 멱등성). 별도 Scheduler를 새로 만들지 않고
 status 갱신/skip) 전부에서 아직 미보강인 공고를 만날 때만 그 자리에서
 즉시 상세조회한다 — 소급 백필 스크립트도, `GET /api/jobs` 응답 노출도
 이번 Phase에는 포함하지 않았다(ADR-0013). 상세조회 개별 실패는 트랜잭션
-경계로 격리해 목록 수집 전체에 영향을 주지 않는다. 나머지 도메인은 아직
+경계로 격리해 목록 수집 전체에 영향을 주지 않는다. COLLECT-005는
+`AlioCollectorService.collect(int numOfRows)`가 `pageNo=1` 한 페이지만
+보던 것을 pagination 루프로 재작성했다 — 실 서비스키로 직접 검증한 결과
+ALIO `list.do`는 페이지당 1000건으로 서버가 조용히 캡을 걸고,
+**같은 collection run 안에서 서버에 보내는 페이지 크기를 바꾸면 오프셋이
+깨지는 것**을 실측으로 확인해(ADR-0014), 페이지 크기를 run 전체에서
+고정하고 호출자가 지정한 총 상한에 도달하면 마지막 페이지 응답을
+클라이언트 측에서 슬라이싱하는 방식을 택했다. `numOfRows`의 기존 API
+의미("이 호출에서 처리할 최대 총 건수")는 그대로 유지해 하위호환을
+지켰다. `AlioCollectionScheduler`/`CollectController`/`CollectResult`/
+`AlioDetailEnrichmentService`는 전혀 수정하지 않았고, Scheduler의 기본
+수집 범위만 설정값으로 50 → 5,000건으로 확대했다(전체 112,920건 전수
+순회는 이번 Phase에서 의도적으로 배제 — ADR-0014). 나머지 도메인은 아직
 코드로 구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을
 받아 정한다.
 

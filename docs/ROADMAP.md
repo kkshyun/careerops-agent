@@ -85,17 +85,36 @@
       미보강 50건 전부 보강, 재수집 시 재호출 없음 확인)
       (`.ai/tasks/COLLECT-004.md`).
 
-### Phase 5 이후 후보
+## Phase 6 — ALIO 목록 API pagination 완성 (완료)
+
+목표: `AlioCollectorService.collect(int numOfRows)`가 `pageNo=1` 한 페이지만
+보던 것을, 호출자가 지정한 범위(`numOfRows`) 안에서는 여러 페이지를 정확히
+순회해 공고를 빠뜨리거나 중복 저장하지 않도록 완성한다.
+
+- [x] COLLECT-005 — 실 서비스키로 `list.do` pagination 계약을 직접
+      검증(페이지당 서버 캡 1000건, `totalCount` 신뢰 가능, 마지막 페이지
+      이후 호출은 에러가 아니라 빈 배열, **동일 run 내 페이지 크기를
+      바꾸면 오프셋이 깨지는 것을 실측으로 발견**). `numOfRows`의 기존
+      의미("이 호출에서 처리할 최대 총 건수")를 그대로 유지하며 내부만
+      고정 페이지 크기 pagination 루프로 재작성(ADR-0014). Scheduler는
+      코드 변경 없이 기본 수집 범위만 50 → **5,000건**으로 확대(전체
+      112,920건 전수 순회 아님 — 사용자 승인, detail enrichment가 신규
+      저장 직후 즉시 실행되는 구조상 전수 순회 시 대량 `detail.do` 호출이
+      발생하는 것을 피함). `careerops.collector.pages` metric 신설. 58/58
+      테스트 통과(`.ai/tasks/COLLECT-005.md`).
+
+### Phase 6 이후 후보
 
 - **다중 인스턴스 분산 Scheduler**(ShedLock 등) — 현재 단일 인스턴스
   전제. 여러 인스턴스로 확장하는 시점에 ADR-0011 "영향" 절 참고해 재설계.
 - **`GET /api/jobs` 응답에 steps/attachments 노출** — COLLECT-004는 저장까지만
   다루고 조회 API는 의도적으로 변경하지 않았다(ADR-0013). 실사용에서
   필요성이 확인되면 별도 Task.
-- **dev DB 과거 데이터 전체 소급 백필** — COLLECT-004는 목록 수집 중 자연히
-  재발견되는 공고만 보강한다(ADR-0013). ALIO 목록 page 1 범위 밖으로
-  밀려난 과거 공고는 별도 백필 없이는 영구히 미보강 상태로 남는다 —
-  필요성이 확인되면 별도 Task.
+- **전체 112,920건 히스토리 백필** — COLLECT-005로 pagination 자체는
+  정확히 동작하지만, Scheduler는 매 6시간 최근 5,000건만 훑는다(ADR-0014).
+  그보다 오래된 과거 공고는 여전히 미보강 상태로 남을 수 있다 — 전체
+  히스토리를 훑는 것은 별도 운영 작업(1회성 배치 등)으로 분리하기로
+  결정했다(ADR-0014). 필요성이 확인되면 별도 Task.
 - **steps/files 갱신(re-sync)** — 현재는 `detailFetchedAt`이 한 번 설정되면
   다시 상세조회하지 않는다(최초 1회 동기화만). 전형 일정/첨부파일이 저장
   이후 바뀌어도 반영되지 않음 — 필요성이 확인되면 별도 설계.
