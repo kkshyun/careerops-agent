@@ -4,8 +4,11 @@ import com.careerops.backend.collector.alio.AlioApiException;
 import com.careerops.backend.collector.alio.AlioCollectorService;
 import com.careerops.backend.job.JobPosting;
 import com.careerops.backend.job.JobPostingRepository;
+import com.careerops.backend.job.RecruitmentStepRepository;
+import com.careerops.backend.job.AttachmentRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -29,6 +32,15 @@ class AlioCollectorServiceTest {
     @Autowired private JobPostingRepository repository;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private MeterRegistry meterRegistry;
+    @Autowired private RecruitmentStepRepository stepRepository;
+    @Autowired private AttachmentRepository attachmentRepository;
+
+    @BeforeEach
+    void registerDetailFixtures() throws Exception {
+        client.resetDetails();
+        var detail = AlioFixtureSupport.readDetail(objectMapper, "alio-detail-response-empty.json");
+        for (long sn : new long[]{1001, 1002, 2001, 2002, 2003}) client.respondToDetail(sn, detail);
+    }
 
     @Test
     void collectsMapsSavesAndRecordsMetrics() throws Exception {
@@ -107,6 +119,61 @@ class AlioCollectorServiceTest {
         assertThat(repository.count()).isEqualTo(rowsBefore);
         assertThat(counter("careerops.collector.run", "source", "alio", "result", "failed"))
                 .isEqualTo(runBefore + 1);
+    }
+
+    @Test
+    void enrichesNewPostingOnceAndDoesNotRefetchWhenRediscovered() throws Exception {
+        var list = AlioFixtureSupport.read(objectMapper, "alio-list-response-valid.json");
+        client.respondWith(list);
+        client.respondToDetail(1001, AlioFixtureSupport.readDetail(objectMapper, "alio-detail-response-valid.json"));
+
+        service.collect(50);
+        JobPosting posting = repository.findFirstBySourceAndExternalId("ALIO", "1001").orElseThrow();
+        assertThat(stepRepository.findByJobPostingId(posting.getId())).hasSize(2);
+        assertThat(attachmentRepository.findByJobPostingId(posting.getId())).hasSize(3);
+        assertThat(posting.getDetailFetchedAt()).isNotNull();
+        assertThat(client.capturedDetailSns()).containsExactly(1001L, 1002L);
+
+        service.collect(50);
+        assertThat(client.capturedDetailSns()).containsExactly(1001L, 1002L);
+        assertThat(stepRepository.findByJobPostingId(posting.getId())).hasSize(2);
+        assertThat(attachmentRepository.findByJobPostingId(posting.getId())).hasSize(3);
+    }
+
+    @Test
+    void isolatesOneDetailFailureWhileSavingAllListItems() throws Exception {
+        client.respondWith(AlioFixtureSupport.read(objectMapper, "alio-list-response-valid.json"));
+        client.respondToDetail(1001, AlioFixtureSupport.readDetail(objectMapper, "alio-detail-response-valid.json"));
+        client.failDetailWith(1002, new AlioApiException(AlioApiException.Reason.FETCH_ERROR, "synthetic failure"));
+
+        CollectResult result = service.collect(50);
+
+        assertThat(result.saved()).isEqualTo(2);
+        JobPosting successful = repository.findFirstBySourceAndExternalId("ALIO", "1001").orElseThrow();
+        JobPosting failed = repository.findFirstBySourceAndExternalId("ALIO", "1002").orElseThrow();
+        assertThat(successful.getDetailFetchedAt()).isNotNull();
+        assertThat(failed.getDetailFetchedAt()).isNull();
+        assertThat(stepRepository.findByJobPostingId(failed.getId())).isEmpty();
+        assertThat(attachmentRepository.findByJobPostingId(failed.getId())).isEmpty();
+    }
+
+    @Test
+    void enrichesPreviouslyUnfetchedPostingDuringStatusUpdate() throws Exception {
+        var open = AlioFixtureSupport.read(objectMapper, "alio-list-response-valid.json").result().getFirst();
+        JobPosting posting = new com.careerops.backend.job.JobPosting(
+                open.instNm(), open.recrutPbancTtl(), open.hireTypeNmLst(), open.recrutSeNm(),
+                open.acbgCondNmLst(), "OPEN", open.pblntInstCd(), open.ncsCdNmLst(), open.workRgnNmLst(),
+                LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 20), "ALIO", open.srcUrl(), "1001");
+        repository.save(posting);
+        client.respondWith(AlioFixtureSupport.read(objectMapper, "alio-list-response-closed.json"));
+        client.respondToDetail(1001, AlioFixtureSupport.readDetail(objectMapper, "alio-detail-response-valid.json"));
+
+        CollectResult result = service.collect(50);
+
+        assertThat(result.updated()).isOne();
+        assertThat(posting.getStatus()).isEqualTo("CLOSED");
+        assertThat(posting.getDetailFetchedAt()).isNotNull();
+        assertThat(stepRepository.findByJobPostingId(posting.getId())).hasSize(2);
     }
 
     private double counter(String name, String... tags) {

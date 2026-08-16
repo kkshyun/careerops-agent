@@ -53,4 +53,34 @@ public class RestClientAlioJobClient implements AlioJobClient {
             throw new AlioApiException(AlioApiException.Reason.FETCH_ERROR, "Failed to fetch ALIO jobs", exception);
         }
     }
+
+    @Override
+    public AlioJobDetailResponse fetchDetail(long sn) {
+        try {
+            AlioJobDetailResponse response = restClient.post()
+                    .uri(uriBuilder -> uriBuilder.path("/detail.do")
+                            .queryParam("sn", sn)
+                            .queryParam("serviceKey", apiKey)
+                            .queryParam("resultType", "json")
+                            .build())
+                    .header("swaggerType", "Y")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .body("{}")
+                    .retrieve()
+                    .body(AlioJobDetailResponse.class);
+            if (response == null) {
+                throw new AlioApiException(AlioApiException.Reason.PARSE_ERROR, "ALIO returned an empty detail body");
+            }
+            if (!"200".equals(response.resultCode())) {
+                throw new AlioApiException(AlioApiException.Reason.FETCH_ERROR,
+                        "ALIO returned detail resultCode=" + response.resultCode());
+            }
+            return response;
+        } catch (HttpMessageConversionException | DecodingException exception) {
+            throw new AlioApiException(AlioApiException.Reason.PARSE_ERROR, "Failed to parse ALIO detail response", exception);
+        } catch (RestClientException exception) {
+            throw new AlioApiException(AlioApiException.Reason.FETCH_ERROR, "Failed to fetch ALIO job detail", exception);
+        }
+    }
 }

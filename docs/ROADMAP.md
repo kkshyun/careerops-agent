@@ -65,19 +65,46 @@
       skipped/updated/failed) 신설, 기존 `careerops.collector.*`는 변경
       없음. 45/45 테스트 통과(`.ai/tasks/COLLECT-003.md`).
 
-### Phase 4 이후 후보
+## Phase 5 — ALIO 상세조회(`/detail.do`) 연동 (완료)
+
+목표: COLLECT-001부터 반복적으로 Out of Scope 처리됐던 채용전형단계
+(`steps`)/첨부파일(`files`) 메타정보를 실제 상세조회 API로 보강한다.
+
+- [x] COLLECT-004 — 실제 서비스키로 `/detail.do`(`POST`, query param
+      `sn`=`recrutPblntSn`) 요청/응답 구조를 직접 검증(파라미터명/응답
+      envelope/`steps`·`files` 실제 필드 전부 실호출로 확인, 추측 없음).
+      `RecruitmentStep`/`Attachment` Entity 신설(자연키 `recrutStepSn`/
+      `recrutAtchFileNo` UNIQUE + 애플리케이션 exists 체크 이중 멱등성).
+      `JobPosting.detailFetchedAt`으로 보강 완료 여부를 추적해, 목록 수집
+      (`AlioCollectorService.collect()`) 중 재발견되는 공고(신규/status
+      갱신/skip 전부 포함) 중 미보강 건만 그 자리에서 즉시 상세조회 —
+      별도 Scheduler·소급 백필 스크립트 없음, `GET /api/jobs` 응답에도
+      아직 노출 안 함(저장까지만). 상세조회 개별 실패는 트랜잭션 격리로
+      목록 수집 전체에 영향 없음. `careerops.collector.detail.*` metric
+      4종 신설. 51/51 테스트 통과 + 실제 키로 수동 검증(신규 기동 시
+      미보강 50건 전부 보강, 재수집 시 재호출 없음 확인)
+      (`.ai/tasks/COLLECT-004.md`).
+
+### Phase 5 이후 후보
 
 - **다중 인스턴스 분산 Scheduler**(ShedLock 등) — 현재 단일 인스턴스
   전제. 여러 인스턴스로 확장하는 시점에 ADR-0011 "영향" 절 참고해 재설계.
+- **`GET /api/jobs` 응답에 steps/attachments 노출** — COLLECT-004는 저장까지만
+  다루고 조회 API는 의도적으로 변경하지 않았다(ADR-0013). 실사용에서
+  필요성이 확인되면 별도 Task.
+- **dev DB 과거 데이터 전체 소급 백필** — COLLECT-004는 목록 수집 중 자연히
+  재발견되는 공고만 보강한다(ADR-0013). ALIO 목록 page 1 범위 밖으로
+  밀려난 과거 공고는 별도 백필 없이는 영구히 미보강 상태로 남는다 —
+  필요성이 확인되면 별도 Task.
+- **steps/files 갱신(re-sync)** — 현재는 `detailFetchedAt`이 한 번 설정되면
+  다시 상세조회하지 않는다(최초 1회 동기화만). 전형 일정/첨부파일이 저장
+  이후 바뀌어도 반영되지 않음 — 필요성이 확인되면 별도 설계.
 
 ### Phase 3 이후 후보 (우선순위 미확정, 필요 시점에 별도 Task로 분리)
 
 - **기관유형/기관분류 텍스트 매핑** — ALIO 목록 API 응답에는 기관 코드
   (`pblntInstCd`)만 있고 유형/분류명 필드가 없음이 확인됨(COLLECT-002 조사).
   참조 데이터(코드정의서/기관목록 API 등)를 확보해야 가능.
-- **ALIO 상세조회(`/detail.do`) 연동** — 채용전형단계(`steps`)/첨부파일
-  메타정보(`files`)는 목록 API에서 항상 빈 배열. 상세 API 연동 필요
-  (COLLECT-001부터 반복적으로 Out of Scope 처리된 부분).
 - **공고 전체 필드 갱신 전략** — 현재(COLLECT-002 기준)는 재수집 시 상태만
   갱신하고 나머지 필드는 최초 저장값 유지. 필드 전체를 최신화하려면 별도
   설계 필요.

@@ -3,6 +3,7 @@ package com.careerops.backend.collector.alio;
 import com.careerops.backend.collector.CollectResult;
 import com.careerops.backend.job.JobPostingRepository;
 import com.careerops.backend.job.JobPostingService;
+import com.careerops.backend.job.JobPosting;
 import com.careerops.backend.job.dto.JobPostingCreateRequest;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -26,19 +27,22 @@ public class AlioCollectorService {
     private final MeterRegistry meterRegistry;
     private final Counter fetchedCounter;
     private final Counter savedCounter;
+    private final AlioDetailEnrichmentService detailEnrichmentService;
 
     public AlioCollectorService(
             AlioJobClient client,
             JobPostingRepository repository,
             JobPostingService jobPostingService,
             Validator validator,
-            MeterRegistry meterRegistry
+            MeterRegistry meterRegistry,
+            AlioDetailEnrichmentService detailEnrichmentService
     ) {
         this.client = client;
         this.repository = repository;
         this.jobPostingService = jobPostingService;
         this.validator = validator;
         this.meterRegistry = meterRegistry;
+        this.detailEnrichmentService = detailEnrichmentService;
         this.fetchedCounter = Counter.builder("careerops.collector.fetched").tag("source", METRIC_SOURCE).register(meterRegistry);
         this.savedCounter = Counter.builder("careerops.collector.saved").tag("source", METRIC_SOURCE).register(meterRegistry);
     }
@@ -81,21 +85,30 @@ public class AlioCollectorService {
             }
             var existing = repository.findFirstBySourceAndExternalId(request.source(), request.externalId());
             if (existing.isPresent()) {
+                JobPosting jobPosting = existing.get();
                 if (Objects.equals(existing.get().getStatus(), request.status())) {
                     skipped++;
                 } else {
-                    jobPostingService.updateStatus(existing.get(), request.status());
+                    jobPostingService.updateStatus(jobPosting, request.status());
                     updated++;
                 }
+                enrichIfNeeded(jobPosting);
                 continue;
             }
-            jobPostingService.create(request);
+            JobPosting jobPosting = jobPostingService.create(request);
             saved++;
             savedCounter.increment();
+            enrichIfNeeded(jobPosting);
         }
 
         runCounter("success").increment();
         return new CollectResult("ALIO", fetched, saved, skipped, updated, failed, "success");
+    }
+
+    private void enrichIfNeeded(JobPosting jobPosting) {
+        if (jobPosting.getDetailFetchedAt() == null) {
+            detailEnrichmentService.enrich(jobPosting);
+        }
     }
 
     private Counter failedCounter(String reason) {

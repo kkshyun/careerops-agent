@@ -29,7 +29,8 @@ public class JobPostingController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public JobPostingResponse create(@Valid @RequestBody JobPostingCreateRequest request) {
-        return service.create(request);
+        JobPosting saved = service.create(request);
+        return JobPostingResponse.from(saved);
     }
 
     @GetMapping("/{id}")

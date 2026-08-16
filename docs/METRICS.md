@@ -127,6 +127,23 @@ Prometheus label cardinality가 무한정 늘어날 위험이 있다. 출처가 
 `CollectController`/`CollectResult`는 COLLECT-003으로 전혀 수정되지
 않았다.
 
+**ALIO 상세조회 보강 (COLLECT-004)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_collector_detail_run_total` | `careerops.collector.detail.run` | Counter | `result`=`success`\|`failed` | 개별 공고 상세조회(`/detail.do`) 시도의 성공/실패 횟수 | `AlioDetailEnrichmentService` — 상세조회 시도마다 |
+| `careerops_collector_detail_steps_total` | `careerops.collector.detail.steps` | Counter | 없음 | 신규 저장된 `RecruitmentStep` 건수 누적 | `AlioDetailEnrichmentService` — 저장 성공 시 |
+| `careerops_collector_detail_files_total` | `careerops.collector.detail.files` | Counter | 없음 | 신규 저장된 `Attachment` 건수 누적 | `AlioDetailEnrichmentService` — 저장 성공 시 |
+| `careerops_collector_detail_duration_seconds` | `careerops.collector.detail.duration` | Timer | 없음 | 상세조회 1건(fetch+저장) 소요 시간 | `AlioDetailEnrichmentService` — 시도 전체 |
+
+`careerops_collector_*`(COLLECT-001, 목록 수집)와 별개 네임스페이스다 —
+목록 수집은 공고당 1회지만 상세 보강은 `JobPosting`이 아직 미보강
+(`detailFetchedAt IS NULL`)일 때만 그 자리에서 1회 실행되고, 이미 보강된
+공고는 재수집 시 다시 호출되지 않는다(멱등). 실제 수동 검증 시 최초
+`AlioCollectionScheduler` 실행(기동 1분 뒤, `numOfRows=50`)에서 미보강
+공고 50건 전부가 정상 보강되어 `run_total{result="success"}=50`,
+`steps_total=233`, `files_total=153`로 노출됨을 확인했다.
+
 **Manual Job Import (IMPORT-001)**
 
 | 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |

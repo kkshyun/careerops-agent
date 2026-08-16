@@ -1,0 +1,17 @@
+{
+  "result": {
+    "recrutPblntSn": 1001,
+    "ignoredField": "합성된 미사용 값",
+    "steps": [
+      {"sortNo": 0, "cmpttRt": 3.5, "aplyNope": 14, "minStepSn": 51001, "recrutNope": 4, "rsnOcrnYmd": "합성-원문", "maxStepSn": 51002, "recrutStepSn": 51001, "recrutPbancTtl": "정보기술"},
+      {"sortNo": 0, "cmpttRt": null, "aplyNope": null, "minStepSn": 51001, "recrutNope": null, "rsnOcrnYmd": null, "maxStepSn": 51002, "recrutStepSn": 51002, "recrutPbancTtl": "정보기술"}
+    ],
+    "files": [
+      {"sortNo": 1, "recrutAtchFileNo": 61001, "atchFileNm": "합성 채용공고.pdf", "atchFileType": "A", "url": "https://example.invalid/files/61001"},
+      {"sortNo": 2, "recrutAtchFileNo": 61002, "atchFileNm": "합성 지원서.hwp", "atchFileType": "B", "url": "https://example.invalid/files/61002"},
+      {"sortNo": 3, "recrutAtchFileNo": 61003, "atchFileNm": "합성 직무자료.pdf", "atchFileType": "Z", "url": "https://example.invalid/files/61003"}
+    ]
+  },
+  "resultCode": 200,
+  "resultMsg": "성공했습니다."
+}

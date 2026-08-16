@@ -634,3 +634,77 @@ dependency 없이 Spring Boot가 이미 제공하는 "임의 파일을 `.propert
 기준 상대 경로(`../.env`)가 맞지 않는 특수한 실행 방식(예: 다른 작업
 디렉터리)에서는 여전히 값을 못 찾을 수 있음 — 그 경우 기존처럼 OS
 환경변수를 직접 설정하면 된다.
+
+---
+
+## ADR-0013: ALIO 상세조회(`/detail.do`) 보강 — 목록 수집 inline 실행,
+## 소급 백필 없음, 조회 API 미노출
+
+- 날짜: 2026-08-16
+- 상태: 확정
+- 관련 Task: COLLECT-004
+
+**문제**: ALIO 목록 API의 `steps`(전형단계)/`files`(첨부파일)는 항상 빈
+배열이라 상세조회(`/detail.do`)가 필요하다는 것은 COLLECT-001부터 알고
+있었지만, (1) 언제 상세조회를 실행할지(모든 공고마다? 신규만? 별도
+Scheduler?), (2) 이미 dev DB에 쌓인 과거 공고(COLLECT-001~003, steps/files
+없음)를 이번 Phase에서 소급 보강할지, (3) 보강된 데이터를 `GET /api/jobs`
+응답에 바로 노출할지가 정해지지 않은 채였다. 세 질문 모두 "다른 선택이
+실제로 결과를 바꾸는" 지점이라 임의로 정하지 않고 사용자에게 제시했다.
+
+**결정**:
+
+1. **실행 시점 — 목록 수집 inline, 별도 Scheduler 없음**: `AlioCollectorService.collect()`가
+   목록을 처리하는 기존 3개 분기(신규 저장/status 갱신/skip) 전부에서,
+   그 자리의 `JobPosting`이 아직 `detailFetchedAt == null`이면 즉시
+   `AlioDetailEnrichmentService.enrich()`를 호출한다. `AlioCollectionScheduler`
+   (COLLECT-003)는 수정하지 않고 그대로 재사용 — 이 Scheduler가 정기적으로
+   목록을 재수집할 때마다 자연히 상세 보강도 같이 진행된다.
+2. **소급 백필 없음, "재발견 시에만" 보강**: dev DB에 이미 있는 과거 공고
+   전체를 순회하며 상세를 채우는 별도 스크립트/API는 만들지 않는다. 대신
+   목록 수집 중 그 공고가 다시 나타나면(신규가 아니어도, status 갱신이든
+   변화 없는 skip이든) 미보강 상태라면 그 자리에서 보강한다. 결과적으로
+   ALIO 목록 API의 현재 조회 range(`numOfRows`, 기본 50, page 1) 안에
+   남아 있는 공고만 점진적으로 채워지고, 이미 이 range 밖으로 밀려난
+   오래된 공고는 이번 Phase에서 보강되지 않는다 — 의도된 제약이다.
+3. **`detailFetchedAt`(nullable Instant)으로 보강 완료 여부 추적**: 성공
+   시에만 설정, 실패 시에는 건드리지 않아 다음 재발견 때 자동 재시도된다.
+   실패 횟수/backoff를 추적하는 별도 상태 머신은 만들지 않는다 — 같은
+   공고가 계속 목록 range 안에 있는 동안만 최대 6시간(Scheduler 주기)마다
+   1회씩만 재시도되므로 호출량이 자연히 bound된다.
+4. **`GET /api/jobs`/`GET /api/jobs/{id}` 응답 미노출**: `RecruitmentStep`/
+   `Attachment`는 DB에는 저장되지만 이번 Phase는 `JobPostingResponse`/
+   `JobPostingController`를 변경하지 않는다 — 저장까지만 다룬다.
+
+**대안**:
+- **신규 저장 시에만 1회 상세조회**(원래 초안) — 기각(사용자 요청으로
+  변경). 이미 COLLECT-001~003으로 dev DB에 쌓인 105건은 전부 신규가
+  아니므로 영원히 미보강 상태로 남는다는 문제가 있었다.
+- **전체 페이지네이션 순회 + 백필 전용 API/스크립트** — 기각. 사용자가
+  명시적으로 "기존 dev DB 전체를 한 번에 순회하거나 대량 외부 API 호출하는
+  백필 기능은 이번 Phase에 만들지 마"라고 지정했다. 외부 API를 한 번에
+  대량 호출하는 위험(문서화된 rate limit을 찾지 못한 상태) 대비 이번
+  Phase 범위를 넘어선다고 판단.
+- **status 갱신/신규 저장 시에만 보강, skip 시에는 보강 안 함** — 기각.
+  사용자가 "재발견됐고 아직 보강이 안 됐다면" 보강하라고 명시했고, skip은
+  가장 흔한 재발견 경로(대부분의 재수집 결과)라 이 경로를 빼면 사실상
+  "거의 보강되지 않는" 결과가 된다.
+- **별도 "상세 보강 전용" Scheduler** — 기각. 목록을 다시 순회해야
+  "재발견"을 판단할 수 있는데, 이는 이미 `AlioCollectionScheduler`가
+  하는 일과 같아서 별도 Scheduler를 만들면 같은 목록 조회를 두 번(기존
+  Scheduler + 신규 Scheduler) 하게 된다.
+- **응답 DTO에 즉시 노출** — 기각(이번 Phase). Controller/DTO/테스트가
+  추가로 필요해 Task 범위가 "수집 보강"에서 "조회 API 확장"으로 넘어간다
+  — Phase 목표와 어긋나 별도 Task로 분리.
+
+**이유**: 기존 Collector/Scheduler 코드를 거의 건드리지 않으면서(3개
+분기에 1줄씩 추가) "이미 있는 데이터도 점진적으로 채워진다"는 실용적
+요구를 만족시킨다. 대량 외부 API 호출이나 새로운 상태 머신 없이,
+`detailFetchedAt` 단일 nullable 필드만으로 "최초 1회만 보강, 실패하면
+자연 재시도"가 성립한다.
+
+**영향**: ALIO 목록 API의 현재 range 밖으로 이미 밀려난 과거 공고(예:
+마감된 지 오래된 공고)는 steps/files가 영구히 비어 있을 수 있다 —
+필요해지면 별도 백필 Task로 다룬다(`docs/ROADMAP.md` "Phase 5 이후
+후보"). `RecruitmentStep`/`Attachment` 데이터는 이번 Phase 이후에도
+API로 조회할 수 없다 — 조회 API 확장은 별도 Task.

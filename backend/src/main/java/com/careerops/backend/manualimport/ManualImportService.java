@@ -2,6 +2,7 @@ package com.careerops.backend.manualimport;
 
 import com.careerops.backend.job.JobPostingRepository;
 import com.careerops.backend.job.JobPostingService;
+import com.careerops.backend.job.JobPosting;
 import com.careerops.backend.job.dto.JobPostingCreateRequest;
 import com.careerops.backend.job.dto.JobPostingResponse;
 import com.careerops.backend.manualimport.dto.ManualJobImportRequest;
@@ -42,9 +43,9 @@ public class ManualImportService {
                     return new ManualJobImportResult("duplicate", JobPostingResponse.from(existing));
                 })
                 .orElseGet(() -> {
-                    JobPostingResponse saved = jobPostingService.create(toCreateRequest(request));
+                    JobPosting saved = jobPostingService.create(toCreateRequest(request));
                     savedCounter.increment();
-                    return new ManualJobImportResult("saved", saved);
+                    return new ManualJobImportResult("saved", JobPostingResponse.from(saved));
                 });
     }
 

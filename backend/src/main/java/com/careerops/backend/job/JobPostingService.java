@@ -26,7 +26,7 @@ public class JobPostingService {
         this.notFoundCounter = Counter.builder("careerops.job.read").tag("result", "not_found").register(meterRegistry);
     }
 
-    public JobPostingResponse create(JobPostingCreateRequest request) {
+    public JobPosting create(JobPostingCreateRequest request) {
         JobPosting saved = repository.save(new JobPosting(
                 request.companyName(), request.title(), request.employmentType(),
                 request.careerLevel(), request.educationRequirement(), request.status(), request.institutionCode(),
@@ -34,11 +34,16 @@ public class JobPostingService {
                 request.applicationEndAt(), request.source(), request.sourceUrl(), request.externalId()
         ));
         createdCounter.increment();
-        return JobPostingResponse.from(saved);
+        return saved;
     }
 
     public void updateStatus(JobPosting jobPosting, String status) {
         jobPosting.updateStatus(status);
+        repository.save(jobPosting);
+    }
+
+    public void markDetailFetched(JobPosting jobPosting, java.time.Instant fetchedAt) {
+        jobPosting.markDetailFetched(fetchedAt);
         repository.save(jobPosting);
     }
 

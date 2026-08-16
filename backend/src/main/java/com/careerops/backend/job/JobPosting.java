@@ -32,6 +32,7 @@ public class JobPosting {
     private String source;
     private String sourceUrl;
     private String externalId;
+    private Instant detailFetchedAt;
 
     @CreationTimestamp
     private Instant createdAt;
@@ -87,8 +88,13 @@ public class JobPosting {
     public String getSourceUrl() { return sourceUrl; }
     public String getExternalId() { return externalId; }
     public Instant getCreatedAt() { return createdAt; }
+    public Instant getDetailFetchedAt() { return detailFetchedAt; }
 
     public void updateStatus(String status) {
         this.status = status;
+    }
+
+    public void markDetailFetched(Instant fetchedAt) {
+        this.detailFetchedAt = fetchedAt;
     }
 }

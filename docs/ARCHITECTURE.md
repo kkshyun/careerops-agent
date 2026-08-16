@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-**Phase 4 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 5 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
@@ -141,9 +141,21 @@ AND로 조합하는 JPQL `@Query` 1개, `applicationEndAt ASC NULLS LAST` 고정
 해결하고 별도 분산 락은 도입하지 않았으며(ADR-0011), 실행 실패는 Scheduler
 내부에서 흡수해 다음 스케줄 실행에 영향을 주지 않는다. 관측은 기존
 `careerops.collector.*`(COLLECT-001)를 건드리지 않고 `careerops.scheduler.alio.*`
-전용 metric 네임스페이스를 신설해 분리했다. 나머지 도메인은 아직 코드로
-구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아
-정한다.
+전용 metric 네임스페이스를 신설해 분리했다. COLLECT-004는 COLLECT-001부터
+반복적으로 Out of Scope 처리됐던 ALIO 상세조회(`/detail.do`)를 실제
+서비스키로 요청/응답 구조를 직접 검증한 뒤 연동했다 — 목록 API가 항상 빈
+배열로 주는 채용전형단계(`steps`)/첨부파일(`files`)을 `JobPosting`과
+FK로 연결된 `RecruitmentStep`/`Attachment` Entity로 저장한다(`job` 패키지,
+자연키 `recrutStepSn`/`recrutAtchFileNo`에 DB UNIQUE 제약 + 애플리케이션
+exists 체크 이중 멱등성). 별도 Scheduler를 새로 만들지 않고
+`JobPosting.detailFetchedAt`(nullable)으로 보강 완료 여부를 추적해,
+`AlioCollectorService.collect()`가 목록을 처리하는 3개 분기(신규 저장/
+status 갱신/skip) 전부에서 아직 미보강인 공고를 만날 때만 그 자리에서
+즉시 상세조회한다 — 소급 백필 스크립트도, `GET /api/jobs` 응답 노출도
+이번 Phase에는 포함하지 않았다(ADR-0013). 상세조회 개별 실패는 트랜잭션
+경계로 격리해 목록 수집 전체에 영향을 주지 않는다. 나머지 도메인은 아직
+코드로 구현되지 않았다. 순서는 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을
+받아 정한다.
 
 ## 시스템 구성 (개략, 미확정)
 
