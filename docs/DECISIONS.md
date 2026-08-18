@@ -1304,3 +1304,124 @@ Phase의 진짜 핵심 제약("AI 추출 결과를 검토 없이 확정 사실�
 재사용), (6)(contentHash 참고용 유지) 결정을 전제로 설계해야 한다 — 이때도
 LLM이 만든 candidate가 승인 없이 곧바로 PKB에 쓰이는 경로를 추가해서는
 안 된다(이 ADR의 핵심 제약은 향후 Task에도 그대로 적용된다).
+
+---
+
+## ADR-0022: `ImportCandidate` 검토/승인 흐름 — terminal 3-state,
+## conditional UPDATE 기반 concurrency, `career` Service 오버로드 재사용,
+## `ImportBatch` 명시적 complete + invariant 강제
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: PKB-006
+
+**문제**: ADR-0021이 `ImportCandidate`의 큰 그림(payload를 JSON TEXT로,
+provenance를 career entity에 직접 컬럼으로, 재승인/재거부 방지를 DB
+UNIQUE가 아니라 애플리케이션 상태 체크로)을 이미 확정했지만, PKB-006을
+실제로 구현하려면 그 "애플리케이션 상태 체크"를 정확히 어떻게 구현해야
+동시 요청에서도 안전한지, candidate 상태 전이를 어디까지 허용할지,
+기존 `career` 4개 Service의 생성 로직을 어떻게 재사용할지, 그리고
+`ImportBatch.status`를 언제 `COMPLETED`로 전이시킬지가 남아 있었다.
+
+**결정**:
+
+1. **`ImportCandidateStatus`는 `PENDING`/`APPROVED`/`REJECTED` terminal
+   3-state**다. `PENDING→APPROVED`, `PENDING→REJECTED`만 허용하고
+   `APPROVED`/`REJECTED` 양쪽 다 어떤 상태로도 되돌릴 수 없다(재전이 요청은
+   전부 409). 같은 내용을 다시 검토하고 싶으면 같은 payload로 새
+   `ImportCandidate`를 다시 생성한다.
+2. **Approve/Reject concurrency는 "먼저 원자적 conditional UPDATE, 실패 시
+   진단"** 패턴으로 해결한다 — `UPDATE import_candidates SET status=:new,
+   reviewed_at=:now WHERE id=:id AND import_batch_id=:batchId AND
+   status='PENDING'`을 트랜잭션의 첫 statement로 실행하고 영향 row 수를
+   확인한다. 0건이면 그제서야 원인(404/409)을 구분하는 조회를 한다. 이
+   UPDATE 자체가 Postgres에서 대상 row에 암묵적 row-level lock을 걸기
+   때문에, 동시에 들어온 두 approve 요청 중 하나는 반드시 다른 하나의
+   커밋을 기다린 뒤 최신 상태로 WHERE 절을 재평가하게 되어 PKB row가 두 개
+   생성되는 경우가 구조적으로 불가능하다. 별도 `@Lock(PESSIMISTIC_WRITE)`
+   애노테이션 없이 이 보장을 얻는다. Approve는 이 UPDATE가 성공한 뒤
+   같은 트랜잭션 안에서 payload 재검증 → 대상 `career` Service 호출 → PKB
+   row 생성 → `createdEntityId` 기록까지 이어간다. 중간 어디서든 예외가
+   나면 `@Transactional`이 1번의 상태 변경까지 포함해 전부 롤백한다.
+3. **`career` 4개 Service에 provenance 인자를 받는 오버로드를 추가**한다
+   (`create(request)` → `create(request, SourceType.MANUAL, null)`로
+   위임, `pkbimport`가 `create(request, SourceType.IMPORT,
+   candidateId)`를 호출). 기존 HTTP Controller/DTO/validation/business
+   rule은 전혀 복제하지 않고 그대로 재사용한다. `SourceType` enum은
+   provenance 컬럼을 소유하는 `career` 패키지에 둔다(`pkbimport`가
+   `career`를 아는 단방향 의존은 ADR-0021이 이미 허용).
+4. **`ImportBatch.status`는 명시적 `POST
+   .../batches/{id}/complete` API로만 `OPEN→COMPLETED` 전이**한다(자동
+   완료 없음). `COMPLETED`는 "그 batch의 검토 작업이 끝났다"는 의미의
+   terminal 상태로 정의하고, 다음 불변식을 코드/DB 양쪽에서 강제한다:
+   - complete 요청 시점에 그 batch에 `PENDING` candidate가 하나라도
+     있으면 409(강제로 미완료 처리하지 않음).
+   - 이미 `COMPLETED`인 batch를 다시 complete 요청하면 409.
+   - `COMPLETED`인 batch에는 새 candidate를 생성할 수 없다 — 시도하면
+     409.
+   - reopen(`COMPLETED→OPEN`) API는 이번 Phase에 만들지 않는다. 같은
+     `SourceDocument`를 다시 분석하거나 candidate를 더 추가하고 싶으면
+     새 `ImportBatch`를 만든다 — `ImportBatch`는 "1회의 import/review
+     시도"라는 의미를 계속 유지한다.
+
+   이 불변식("COMPLETED batch는 PENDING candidate를 가질 수 없다")을 두
+   경로(사람이 동시에 complete 요청 + candidate 생성 요청을 보내는 경우)
+   양쪽에서 깨지지 않게 하려고, `complete()`는 `UPDATE import_batches SET
+   status='COMPLETED', completed_at=:now WHERE id=:id AND status='OPEN'
+   AND NOT EXISTS (SELECT 1 FROM import_candidates WHERE
+   import_batch_id=:id AND status='PENDING')` 원자적 UPDATE 하나로
+   구현하고, candidate 생성 경로는 그 직전에 부모 `ImportBatch` row를
+   `SELECT ... FOR UPDATE`(pessimistic write lock, 짧은 구간만)로 잠근 뒤
+   `status==OPEN`을 확인하고 삽입한다. 두 경로가 같은 `import_batches` row
+   lock을 두고 경쟁하므로, 어느 쪽이 먼저 커밋되든 나중 쪽은 항상 최신
+   상태를 보고 올바르게 성공/409를 결정한다 — 이 lock 덕분에
+   approve/reject는 "COMPLETED batch에는 PENDING candidate가 없다"는
+   불변식이 이미 구조적으로 보장되어, 별도로 batch 상태를 다시 확인하는
+   코드를 추가하지 않아도 된다(2번의 candidate-level 상태 체크만으로
+   충분).
+5. **schema 변경 없음** — `import_batches.status`/`completed_at` 컬럼은
+   PKB-005(V12)에서 이미 만들어져 있다(`COMPLETED`는 그때 예약만 해둔
+   값). 이번 Task는 `ImportBatchService`/`ImportBatchController`에 로직만
+   추가한다.
+
+**대안**:
+- **`REJECTED→APPROVED` 허용**(재검토 경로 제공) — 기각. PKB에 이미
+  반영된 `APPROVED`와 달리 `REJECTED`는 되돌릴 이유가 있어 보이지만, 이를
+  허용하면 "언제 그 candidate가 실제로 검토 완료됐다고 볼 것인가"가
+  모호해지고 `ImportBatch.complete()`의 "PENDING candidate 없음" 불변식과도
+  상호작용이 복잡해진다. 같은 payload로 새 candidate를 만드는 비용이
+  거의 0이라 이 복잡도를 감수할 이유가 없다.
+- **Approve concurrency를 `SELECT`(상태 확인) 후 `UPDATE`로 구현** — 기각.
+  COLLECT-006에서 이미 겪은 check-then-act race를 반복한다. 조건부
+  UPDATE를 먼저 실행하는 순서만 바꾸면 별도 락 없이 같은 보장을 얻을 수
+  있어 채택하지 않을 이유가 없다.
+- **`ImportBatch`도 모든 candidate가 terminal이 되면 자동 COMPLETED** —
+  기각(사용자 결정). candidate는 이번 Phase에 사람이 API로 하나씩
+  추가하므로, "지금 0개가 PENDING"과 "사용자가 더 이상 추가할 계획이
+  없다"는 서로 다른 사실이다. 자동 완료는 후자를 시스템이 추론하는
+  것인데 이번 Phase는 그 신호가 없다. 명시적 API가 이 모호함을
+  없앤다.
+- **`COMPLETED` batch에도 candidate 추가를 허용**(complete는 단순
+  마킹일 뿐 강제 없음) — 기각(사용자 결정). "COMPLETED = 그 batch의
+  검토 작업이 끝났다"는 의미를 실제로 강제하지 않으면 상태값이 정보성
+  라벨에 지나지 않게 되고, `candidate가 새로 생겼는데 이미 검토가
+  끝났다고 표시된 batch`라는 모순된 상태가 허용된다.
+- **candidate 생성 시 배치 상태 확인을 `SELECT`(락 없음)로 처리** — 기각.
+  `complete()`의 conditional UPDATE와 경쟁하는 유일한 다른 쓰기 경로라,
+  락 없이 확인하면 두 요청이 동시에 서로 다른 스냅샷을 보고 둘 다
+  성공해버리는 race가 남는다. 단일 row에 대한 짧은 pessimistic lock은
+  단일 사용자 MVP 규모에 비례하는 최소한의 방어다.
+
+**이유**: ADR-0021이 정한 큰 원칙(검토 없이 확정 저장 금지, 4-테이블
+분리 대신 JSON payload, `career`←`pkbimport` 단방향 의존)을 그대로 두고,
+그 안에서 실제 동시성/재사용/lifecycle 세부사항만 이번 ADR로 구체화했다.
+모든 결정이 "단일 사용자 MVP에 비례하는 최소 방어 + DB의 기본 원자성
+보장을 최대한 활용, 별도 분산 락/상태 머신 프레임워크 도입 없음"이라는
+기존 프로젝트 컨벤션(ADR-0011/0015/0016/0019)을 그대로 따른다.
+
+**영향**: `ImportBatch`는 이제 실질적인 상태 머신을 갖는다(`OPEN`→
+`COMPLETED`만, reopen 없음) — 향후 PKB-007/008이 이 API를 소비할 때도
+"COMPLETED batch에는 아무것도 추가할 수 없다"는 불변식을 전제로 설계해야
+한다. LLM 기반 candidate 자동 생성(PKB-008)이 실제로 batch를 채우는
+시점에는, 그 자동 생성 로직도 이번에 만든 candidate 생성 경로(배치 잠금
+포함)를 그대로 재사용하게 된다.

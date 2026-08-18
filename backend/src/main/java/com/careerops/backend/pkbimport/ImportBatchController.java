@@ -32,4 +32,9 @@ public class ImportBatchController {
     public ImportBatchResponse findById(@PathVariable Long id) {
         return service.findById(id);
     }
+
+    @PostMapping("/batches/{id}/complete")
+    public ImportBatchResponse complete(@PathVariable Long id) {
+        return service.complete(id);
+    }
 }

@@ -16,11 +16,16 @@ public class EducationService {
     public EducationService(EducationRepository repository) { this.repository = repository; }
 
     public EducationResponse create(EducationCreateRequest request) {
+        return create(request, SourceType.MANUAL, null);
+    }
+
+    public EducationResponse create(EducationCreateRequest request, SourceType sourceType,
+                                    Long sourceImportCandidateId) {
         validateDates(request.startDate(), request.endDate());
         validateGpa(request.gpa(), request.gpaScale());
         Education entity = repository.save(new Education(request.institution(), request.major(), request.degree(),
                 request.status(), request.startDate(), request.endDate(), request.gpa(), request.gpaScale(),
-                request.description()));
+                request.description(), sourceType, sourceImportCandidateId));
         return EducationResponse.from(entity);
     }
 

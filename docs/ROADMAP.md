@@ -284,7 +284,7 @@ JobPosting 매칭이 사용할 수 있는 안정적인 structured PKB schema를
 했지만 Claude가 로컬에서 매 단계 재실행해 최종 125/125 전체 통과를
 확인했다. 3개 Task 전부 1차 리뷰에서 바로 PASS(수정 요청 없음).
 
-## Phase 13 — PKB 문서 Import 파이프라인 (진행중, PKB-005 완료)
+## Phase 13 — PKB 문서 Import 파이프라인 (진행중, PKB-006까지 완료)
 
 목표: 이력서/포트폴리오/경험정리 등 기존 문서를 PKB로 가져오기 위한
 import 기반을 만든다. 핵심 제약(AGENTS.md)은 "AI/사람이 만든 후보를
@@ -308,14 +308,45 @@ Phase에서 다루지 않는다.
       2→3 import 수정, JsonPath 문자열 length 검증 방식 수정)까지 거쳐
       리뷰 1 round(1차 PASS) 후 146/146 테스트 통과(기존 131 + 신규
       15)(`.ai/tasks/PKB-005.md`, `.ai/reviews/PKB-005-review-1.md`).
+- [x] PKB-006 — `ImportCandidate`(검토 후보, targetType 4종+JSON `payload`
+      VARCHAR(10000) TEXT 컬럼, `jsonb` 아님)와 생성(수동 입력 API,
+      LLM extraction은 이번에도 미구현)/목록/승인/거부 흐름. 상태는
+      `PENDING/APPROVED/REJECTED` terminal 3-state(`PENDING`에서만 전이,
+      재승인/재거부 전부 409). Approve/Reject concurrency는 SELECT 후
+      UPDATE가 아니라 **조건부 UPDATE를 트랜잭션 첫 statement로 실행**하는
+      패턴(`WHERE status='PENDING'`, 영향 row 0건이면 그제서야 404/409
+      진단)으로 해결 — 별도 `@Lock` 없이 Postgres UPDATE의 암묵적
+      row-level lock만으로 동시 approve가 PKB row를 두 개 만들 수 없음을
+      보장(COLLECT-006 check-then-act 재발 방지, ADR-0022). 승인 시
+      기존 `CareerExperience`/`Certification`/`Education`/`Award`
+      Service에 provenance 인자를 받는 오버로드를 추가해 재사용(검증/
+      business rule 중복 없음), 각 entity에 `sourceType`(MANUAL/IMPORT)/
+      `sourceImportCandidateId` 컬럼 신설 — `career` 패키지는 여전히
+      `pkbimport`를 import하지 않는 단방향 의존 유지. `ImportBatch`에
+      명시적 `POST .../complete` API 추가(자동 완료 없음, 사용자 결정) —
+      `PENDING` candidate가 남아있으면 409, 이미 `COMPLETED`면 409,
+      `COMPLETED` batch에는 candidate 생성 자체가 409, reopen 없음(같은
+      문서를 다시 분석하려면 새 `ImportBatch` 생성). 이 불변식("COMPLETED
+      batch는 PENDING candidate를 가질 수 없다")은 `complete()`의 조건부
+      UPDATE(`NOT EXISTS` PENDING candidate)와 candidate 생성 경로의 부모
+      배치 `PESSIMISTIC_WRITE` lock이 같은 row를 두고 경쟁하는 구조로
+      원자적으로 보장(ADR-0022). 신규 migration
+      `V13__create_import_candidates_table.sql`,
+      `V14__add_pkb_provenance_columns.sql`(기존 row는 전부 사실 그대로
+      `source_type='MANUAL'` backfill, ADR-0021 결정 7). 구현 3
+      round(1차 최초 구현 — sandbox가 자체 테스트 실행 차단, 2차 테스트
+      파일 괄호 문법 오류 수정, 3차는 Claude가 직접 코드를 읽고 진단한
+      두 가지 테스트 격리 버그 — 동시성 테스트가 커밋한 row가
+      `careerops_test`에 leak되어 기존 PKB-005 테스트까지 오염시킨 문제,
+      그리고 rollback 검증 테스트가 클래스 레벨 `@Transactional @Rollback`
+      안에 있어 실제 commit/rollback 경계를 관찰하지 못한 문제 — 후자는
+      이 프로젝트가 이미 `CareerExperienceSearchNonTransactionalTest`로
+      해결한 적 있는 같은 종류의 문제였다) 거쳐 리뷰 1 round(1차 PASS)
+      후 159/159 테스트 통과(기존 146 + 신규 13)(`.ai/tasks/PKB-006.md`,
+      `.ai/reviews/PKB-006-review-1.md`, ADR-0021/ADR-0022).
 
 ### Phase 13 이후 후보
 
-- **PKB-006** — `ImportCandidate`(검토 후보, targetType+JSON payload)
-  생성(수동 입력 API)/목록/승인/거부 흐름과, 승인 시 기존
-  `CareerExperience`/`Certification`/`Education`/`Award` entity에
-  provenance 컬럼(`sourceType`/`sourceImportCandidateId`)을 추가해 실제
-  PKB에 반영하는 로직. PKB-005 완료 후 착수(ADR-0021).
 - **PKB-007** — 파일 업로드(multipart)+PDF/DOCX 텍스트 추출. 파서
   dependency(PDFBox/POI/Tika 등) 선택이 필요해 별도 Task/ADR로 분리.
 - **PKB-008** — LLM 기반 구조화 추출(`SourceDocument.rawText` →

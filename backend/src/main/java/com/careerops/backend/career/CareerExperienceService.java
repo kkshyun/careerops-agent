@@ -24,9 +24,16 @@ public class CareerExperienceService {
 
     @Transactional
     public CareerExperienceDetailResponse create(CareerExperienceCreateRequest request) {
+        return create(request, SourceType.MANUAL, null);
+    }
+
+    @Transactional
+    public CareerExperienceDetailResponse create(CareerExperienceCreateRequest request, SourceType sourceType,
+                                                   Long sourceImportCandidateId) {
         validateDates(request.startDate(), request.endDate());
         CareerExperience entity = repository.save(new CareerExperience(request.type(), request.title(),
-                request.organization(), request.role(), request.startDate(), request.endDate(), request.summary(), request.detail()));
+                request.organization(), request.role(), request.startDate(), request.endDate(), request.summary(), request.detail(),
+                sourceType, sourceImportCandidateId));
         saveBullets(entity, request.bullets() == null ? List.of() : request.bullets());
         saveTags(entity, request.tags() == null ? List.of() : request.tags());
         return detail(entity);

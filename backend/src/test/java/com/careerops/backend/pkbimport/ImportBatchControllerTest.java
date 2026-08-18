@@ -23,6 +23,7 @@ class ImportBatchControllerTest {
     @Autowired MockMvc mockMvc;
     @Autowired SourceDocumentRepository sourceDocumentRepository;
     @Autowired ImportBatchRepository repository;
+    @Autowired ImportCandidateRepository candidateRepository;
 
     @Test
     void createsOpenBatchForExistingDocument() throws Exception {
@@ -71,6 +72,30 @@ class ImportBatchControllerTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(batch.getId()))
                 .andExpect(jsonPath("$.sourceDocumentId").value(document.getId()));
         mockMvc.perform(get(IMPORTS_URL + "/batches/{id}", Long.MAX_VALUE)).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void completesOnlyOpenBatchWithoutPendingCandidates() throws Exception {
+        ImportBatch batch = repository.saveAndFlush(new ImportBatch(
+                sourceDocumentRepository.save(document("complete")), ImportBatchStatus.OPEN));
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/complete", batch.getId()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.completedAt").isNotEmpty());
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/complete", batch.getId()))
+                .andExpect(status().isConflict());
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/complete", Long.MAX_VALUE))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void pendingCandidatePreventsCompletion() throws Exception {
+        ImportBatch batch = repository.saveAndFlush(new ImportBatch(
+                sourceDocumentRepository.save(document("pending")), ImportBatchStatus.OPEN));
+        candidateRepository.saveAndFlush(new ImportCandidate(batch, CandidateTargetType.AWARD,
+                "{\"title\":\"pending\"}"));
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/complete", batch.getId()))
+                .andExpect(status().isConflict());
+        assertThat(repository.findById(batch.getId()).orElseThrow().getStatus()).isEqualTo(ImportBatchStatus.OPEN);
     }
 
     private SourceDocument document(String fileName) {

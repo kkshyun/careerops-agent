@@ -16,6 +16,8 @@ public class Certification {
     private LocalDate expirationDate;
     @Column(name = "credential_id", length = 100) private String credentialId;
     @Column(length = 2000) private String description;
+    @Enumerated(EnumType.STRING) @Column(name = "source_type", nullable = false, length = 20) private SourceType sourceType;
+    @Column(name = "source_import_candidate_id") private Long sourceImportCandidateId;
     @CreationTimestamp private Instant createdAt;
     @UpdateTimestamp private Instant updatedAt;
 
@@ -24,6 +26,12 @@ public class Certification {
                          String credentialId, String description) {
         this.name = name; this.issuer = issuer; this.acquiredDate = acquiredDate;
         this.expirationDate = expirationDate; this.credentialId = credentialId; this.description = description;
+        this.sourceType = SourceType.MANUAL;
+    }
+    public Certification(String name, String issuer, LocalDate acquiredDate, LocalDate expirationDate,
+                         String credentialId, String description, SourceType sourceType, Long sourceImportCandidateId) {
+        this(name, issuer, acquiredDate, expirationDate, credentialId, description);
+        this.sourceType = sourceType; this.sourceImportCandidateId = sourceImportCandidateId;
     }
     public Long getId() { return id; }
     public String getName() { return name; }
@@ -32,6 +40,8 @@ public class Certification {
     public LocalDate getExpirationDate() { return expirationDate; }
     public String getCredentialId() { return credentialId; }
     public String getDescription() { return description; }
+    public SourceType getSourceType() { return sourceType; }
+    public Long getSourceImportCandidateId() { return sourceImportCandidateId; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void updateName(String value) { name = value; }

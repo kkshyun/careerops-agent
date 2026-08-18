@@ -20,6 +20,8 @@ public class Education {
     @Column(precision = 5, scale = 2) private BigDecimal gpa;
     @Column(name = "gpa_scale", precision = 5, scale = 2) private BigDecimal gpaScale;
     @Column(length = 2000) private String description;
+    @Enumerated(EnumType.STRING) @Column(name = "source_type", nullable = false, length = 20) private SourceType sourceType;
+    @Column(name = "source_import_candidate_id") private Long sourceImportCandidateId;
     @CreationTimestamp private Instant createdAt;
     @UpdateTimestamp private Instant updatedAt;
 
@@ -30,6 +32,13 @@ public class Education {
         this.institution = institution; this.major = major; this.degree = degree; this.status = status;
         this.startDate = startDate; this.endDate = endDate; this.gpa = gpa; this.gpaScale = gpaScale;
         this.description = description;
+        this.sourceType = SourceType.MANUAL;
+    }
+    public Education(String institution, String major, EducationDegree degree, EducationStatus status,
+                     LocalDate startDate, LocalDate endDate, BigDecimal gpa, BigDecimal gpaScale,
+                     String description, SourceType sourceType, Long sourceImportCandidateId) {
+        this(institution, major, degree, status, startDate, endDate, gpa, gpaScale, description);
+        this.sourceType = sourceType; this.sourceImportCandidateId = sourceImportCandidateId;
     }
     public Long getId() { return id; }
     public String getInstitution() { return institution; }
@@ -41,6 +50,8 @@ public class Education {
     public BigDecimal getGpa() { return gpa; }
     public BigDecimal getGpaScale() { return gpaScale; }
     public String getDescription() { return description; }
+    public SourceType getSourceType() { return sourceType; }
+    public Long getSourceImportCandidateId() { return sourceImportCandidateId; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void updateInstitution(String value) { institution = value; }

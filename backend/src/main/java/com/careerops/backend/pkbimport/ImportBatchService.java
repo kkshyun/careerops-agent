@@ -7,6 +7,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.transaction.annotation.Transactional;
+import java.time.Instant;
 
 @Service
 public class ImportBatchService {
@@ -34,5 +36,17 @@ public class ImportBatchService {
         ImportBatch entity = repository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         return ImportBatchResponse.from(entity);
+    }
+
+    @Transactional
+    public ImportBatchResponse complete(Long id) {
+        if (repository.completeIfNoPending(id, Instant.now()) == 0) {
+            ImportBatch batch = repository.findById(id)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    batch.getStatus() == ImportBatchStatus.COMPLETED
+                            ? "import batch already completed" : "import batch has pending candidates");
+        }
+        return ImportBatchResponse.from(repository.findById(id).orElseThrow());
     }
 }

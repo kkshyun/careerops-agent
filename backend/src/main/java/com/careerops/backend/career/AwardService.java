@@ -14,8 +14,12 @@ public class AwardService {
     public AwardService(AwardRepository repository) { this.repository = repository; }
 
     public AwardResponse create(AwardCreateRequest request) {
+        return create(request, SourceType.MANUAL, null);
+    }
+
+    public AwardResponse create(AwardCreateRequest request, SourceType sourceType, Long sourceImportCandidateId) {
         Award entity = repository.save(new Award(request.title(), request.issuer(),
-                request.awardedDate(), request.description()));
+                request.awardedDate(), request.description(), sourceType, sourceImportCandidateId));
         return AwardResponse.from(entity);
     }
 

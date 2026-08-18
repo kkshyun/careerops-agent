@@ -18,6 +18,8 @@ public class CareerExperience {
     private LocalDate endDate;
     @Column(length = 500) private String summary;
     @Column(length = 4000) private String detail;
+    @Enumerated(EnumType.STRING) @Column(name = "source_type", nullable = false, length = 20) private SourceType sourceType;
+    @Column(name = "source_import_candidate_id") private Long sourceImportCandidateId;
     @CreationTimestamp private Instant createdAt;
     @UpdateTimestamp private Instant updatedAt;
 
@@ -26,6 +28,13 @@ public class CareerExperience {
                             LocalDate startDate, LocalDate endDate, String summary, String detail) {
         this.type = type; this.title = title; this.organization = organization; this.role = role;
         this.startDate = startDate; this.endDate = endDate; this.summary = summary; this.detail = detail;
+        this.sourceType = SourceType.MANUAL;
+    }
+    public CareerExperience(ExperienceType type, String title, String organization, String role,
+                            LocalDate startDate, LocalDate endDate, String summary, String detail,
+                            SourceType sourceType, Long sourceImportCandidateId) {
+        this(type, title, organization, role, startDate, endDate, summary, detail);
+        this.sourceType = sourceType; this.sourceImportCandidateId = sourceImportCandidateId;
     }
     public Long getId() { return id; }
     public ExperienceType getType() { return type; }
@@ -36,6 +45,8 @@ public class CareerExperience {
     public LocalDate getEndDate() { return endDate; }
     public String getSummary() { return summary; }
     public String getDetail() { return detail; }
+    public SourceType getSourceType() { return sourceType; }
+    public Long getSourceImportCandidateId() { return sourceImportCandidateId; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void updateType(ExperienceType value) { type = value; }

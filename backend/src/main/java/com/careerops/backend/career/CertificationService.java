@@ -15,9 +15,15 @@ public class CertificationService {
     public CertificationService(CertificationRepository repository) { this.repository = repository; }
 
     public CertificationResponse create(CertificationCreateRequest request) {
+        return create(request, SourceType.MANUAL, null);
+    }
+
+    public CertificationResponse create(CertificationCreateRequest request, SourceType sourceType,
+                                          Long sourceImportCandidateId) {
         validateDates(request.acquiredDate(), request.expirationDate());
         Certification entity = repository.save(new Certification(request.name(), request.issuer(),
-                request.acquiredDate(), request.expirationDate(), request.credentialId(), request.description()));
+                request.acquiredDate(), request.expirationDate(), request.credentialId(), request.description(),
+                sourceType, sourceImportCandidateId));
         return CertificationResponse.from(entity);
     }
 
