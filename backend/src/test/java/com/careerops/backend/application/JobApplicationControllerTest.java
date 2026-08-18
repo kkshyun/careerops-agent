@@ -46,6 +46,9 @@ class JobApplicationControllerTest {
     @Autowired
     private AttachmentRepository attachmentRepository;
 
+    @Autowired
+    private ApplicationStageRepository applicationStageRepository;
+
     @Test
     void createsWithDefaultStatusAndReturnsPostingSnapshot() throws Exception {
         JobPosting posting = savePosting("CareerOps Bank", "신입 IT 개발자", "MANUAL", "OPEN");
@@ -66,7 +69,36 @@ class JobApplicationControllerTest {
                 .andExpect(jsonPath("$.companyName").value("CareerOps Bank"))
                 .andExpect(jsonPath("$.title").value("신입 IT 개발자"))
                 .andExpect(jsonPath("$.applicationEndAt").value("2026-08-31"))
-                .andExpect(jsonPath("$.jobPostingStatus").value("OPEN"));
+                .andExpect(jsonPath("$.jobPostingStatus").value("OPEN"))
+                .andExpect(jsonPath("$.stages").doesNotExist());
+    }
+
+    @Test
+    void getsApplicationDetailWithStagesSortedByOrder() throws Exception {
+        JobApplication application = saveApplication(
+                savePosting("기관", "공고", "MANUAL", "OPEN"), ApplicationStatus.INTERESTED, null);
+        ApplicationStage later = applicationStageRepository.saveAndFlush(new ApplicationStage(
+                application, StageType.INTERVIEW, "면접", 2, null, StageResult.PENDING, null));
+        ApplicationStage earlier = applicationStageRepository.saveAndFlush(new ApplicationStage(
+                application, StageType.DOCUMENT, "서류", 1, null, StageResult.PASSED, null));
+
+        mockMvc.perform(get("/api/applications/{id}", application.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stages.length()").value(2))
+                .andExpect(jsonPath("$.stages[0].id").value(earlier.getId()))
+                .andExpect(jsonPath("$.stages[1].id").value(later.getId()));
+    }
+
+    @Test
+    void listResponseDoesNotContainStagesEvenWhenStagesExist() throws Exception {
+        JobApplication application = saveApplication(
+                savePosting("기관", "공고", "MANUAL", "OPEN"), ApplicationStatus.INTERESTED, null);
+        applicationStageRepository.saveAndFlush(new ApplicationStage(
+                application, StageType.DOCUMENT, null, 1, null, StageResult.PENDING, null));
+
+        mockMvc.perform(get("/api/applications"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].stages").doesNotExist());
     }
 
     @Test

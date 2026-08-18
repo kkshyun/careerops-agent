@@ -984,3 +984,55 @@ ALIO 원본 값을 그대로 저장해왔다(`"OPEN"`/`"CLOSED"` 등, 외부 API
 반환하는 새로운 API 계약이 생긴다. `ApplicationStatus`에 새 값이
 필요해지면(예: APPLICATION-002 확장) 이 ADR의 "역할 분리" 원칙을 먼저
 재확인해야 한다 — 전형 단계 정보를 `status`에 다시 밀어넣지 않는다.
+
+---
+
+## ADR-0017: `ApplicationStage` — `JobApplication` 삭제 시 `ON DELETE CASCADE`
+## (ADR-0016의 `JobPosting`→`JobApplication` NO ACTION 컨벤션과 의도적으로 다름)
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: APPLICATION-002
+
+**문제**: `application_stages.job_application_id` FK가 삭제되는
+`JobApplication`을 어떻게 처리할지 정해야 한다. ADR-0016(문제 3)은
+`job_applications.job_posting_id`에 `ON DELETE` 절을 넣지 않기로(NO ACTION)
+결정했었다 — 이 선례를 `ApplicationStage`에도 기계적으로 재적용할지가
+쟁점이었다.
+
+**결정**: `application_stages.job_application_id` FK에는 **`ON DELETE
+CASCADE`**를 사용한다. `JobApplication`을 삭제하면 그 안의 모든
+`ApplicationStage`도 함께 삭제된다. Entity에는 `CascadeType`/양방향
+`@OneToMany` 컬렉션을 추가하지 않는다 — cascade는 DB 제약(FK) 수준에서만
+처리하고, `JobApplication`은 `ApplicationStage`에 대한 역참조 필드를
+갖지 않는다(`RecruitmentStep`/`Attachment`가 `JobPosting`을 역참조하지
+않는 기존 패턴과 동일).
+
+**대안**: ADR-0016과 동일하게 `ON DELETE` 절 없음(NO ACTION) — 기각.
+`JobPosting`→`JobApplication` 관계와 `JobApplication`→`ApplicationStage`
+관계는 겉보기엔 같은 부모-자식 FK 구조지만 실제 성격이 다르다:
+- `JobPosting`은 외부(ALIO)가 소유한 수집 데이터이고, `JobApplication`은
+  사용자가 그 공고에 대해 만든 독립적인 기록(지원 여부/상태/메모)이다 —
+  `JobPosting`이 없어져도 "내가 그 공고에 지원했었다"는 사용자 기록은
+  그 자체로 의미가 있어 보존해야 한다(ADR-0016 결정 3의 근거).
+- 반면 `ApplicationStage`는 `JobApplication` 없이는 어떤 독립적 의미도
+  갖지 않는다 — "서류 전형 일정"이라는 데이터는 그것이 어느 지원 건에
+  속하는지를 전제로만 존재한다. 진짜 aggregate 내부 구성요소이지, 그
+  자체로 사용자가 보존하고 싶어할 별도 레코드가 아니다. `JobApplication`을
+  삭제하면서 그 안의 `ApplicationStage`가 고아로 남으면(`ON DELETE
+  RESTRICT`처럼 삭제 자체를 막거나, 방치해 orphan row로 남기거나) 오히려
+  "지원을 삭제하려면 먼저 모든 전형 단계를 하나씩 수동으로 지워야 한다"는
+  불필요한 마찰만 생긴다.
+
+**이유**: "이전 Task의 FK 정책을 무비판적으로 복제하지 않고, 지금 다루는
+관계의 실제 성격(사용자 소유 기록 간의 참조 vs 진짜 단일 aggregate 내부
+구성요소)에 맞춰 판단한다"는 ADR-0016의 종합 원칙을 그대로 재적용한
+결과다. `ApplicationStage`는 `JobApplication`의 일부이지 별개의 사용자
+기록이 아니므로 CASCADE가 데이터 손실 우려 없이 자연스럽다.
+
+**영향**: `DELETE /api/applications/{id}`(APPLICATION-001에서 이미 존재하는
+엔드포인트)는 이제 그 `JobApplication`에 속한 모든 `ApplicationStage`도
+암묵적으로 함께 삭제한다 — 애플리케이션 코드에서 별도로 자식을 먼저 지우는
+로직을 작성할 필요가 없다. 향후 `ApplicationStage`가 다른 도메인(예:
+Calendar 이벤트)의 참조 대상이 되면, 그 시점에 이 CASCADE가 그 도메인에도
+연쇄적으로 영향을 주는지 재검토해야 한다.

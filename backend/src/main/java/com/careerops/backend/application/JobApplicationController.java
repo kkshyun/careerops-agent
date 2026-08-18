@@ -1,6 +1,7 @@
 package com.careerops.backend.application;
 
 import com.careerops.backend.application.dto.JobApplicationCreateRequest;
+import com.careerops.backend.application.dto.JobApplicationDetailResponse;
 import com.careerops.backend.application.dto.JobApplicationListResponse;
 import com.careerops.backend.application.dto.JobApplicationResponse;
 import com.careerops.backend.application.dto.JobApplicationUpdateRequest;
@@ -36,7 +37,7 @@ public class JobApplicationController {
     }
 
     @GetMapping("/{id}")
-    public JobApplicationResponse findById(@PathVariable Long id) {
+    public JobApplicationDetailResponse findById(@PathVariable Long id) {
         return service.findById(id);
     }
 

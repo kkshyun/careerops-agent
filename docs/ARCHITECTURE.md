@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-**Phase 9 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 10 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
@@ -221,6 +221,31 @@ constructor expression으로 `JobPosting`과 JOIN해 응답 DTO를 단일 쿼리
 `JobPostingService`와 동일하게 `@Transactional`은 쓰지 않았다(ADR-0015와
 같은 근거). 신규 migration `V5__create_job_applications_table.sql`,
 신규 metric은 없음(일반 CRUD라 기존 Spring HTTP metric으로 충분).
+APPLICATION-002는 ADR-0016이 미리 역할을 분리해둔 `ApplicationStage`
+(전형 단계별 일정/결과)를 실제로 추가했다 — `JobApplication`과 동일한
+`@ManyToOne(optional=false, fetch=LAZY)` FK 패턴, `StageType`(DOCUMENT/
+CODING_TEST/WRITTEN/INTERVIEW/FINAL/OTHER, 같은 타입 반복 허용)/
+`StageResult`(PENDING/PASSED/FAILED/CANCELLED, not null, 기본값 PENDING)
+enum 2종을 신설했다. 같은 `JobApplication` 안에서 전형 순서는 `sortOrder`
+(생성 시 생략하면 최대값+1 자동 할당, `UNIQUE(job_application_id,
+sort_order)` 위반 시 409)로 관리하고 `stageType` 자체에는 유일성 제약을
+두지 않는다(같은 타입이 여러 번 나타날 수 있어 `label`로 구분). 신규
+nested API `POST/GET/GET{id}/PATCH/DELETE
+/api/applications/{applicationId}/stages`는 부모 `JobApplication` 존재
+확인과 stage 소속 검증을 모두 거치고, PATCH는 기존 컨벤션대로 null=무변경
+(`stageType`은 수정 불가). `GET /api/applications/{id}`는 JOB-003의 detail
+DTO 패턴을 재사용한 신규 `JobApplicationDetailResponse`로 `stages`를
+`sortOrder ASC` 포함해 반환하지만, 목록/생성/수정 응답은 기존
+`JobApplicationResponse`(stages 없음) 그대로 유지해 목록 조회 경로에
+stage 쿼리가 전혀 섞이지 않는다(N+1 없음). `JobApplication.status`와
+`ApplicationStage.result`는 서로 자동 전이하지 않는다 — 둘 다 사용자가
+각각 명시적으로 관리하는 독립된 축이다. `application_stages.job_application_id`
+FK는 `JobPosting`→`JobApplication`의 `NO ACTION` 컨벤션(ADR-0016)을
+그대로 복제하지 않고 `ON DELETE CASCADE`로 결정했다(ADR-0017) —
+`ApplicationStage`는 사용자가 별도로 보존하고 싶어할 독립 기록이 아니라
+`JobApplication` 없이는 의미가 없는 진짜 aggregate 내부 데이터이기
+때문이다. `@Transactional` 미사용, 신규 dependency 없음은 기존 컨벤션과
+동일. 신규 migration `V6__create_application_stages_table.sql`.
 나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
 

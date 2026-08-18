@@ -1,6 +1,8 @@
 package com.careerops.backend.application;
 
 import com.careerops.backend.application.dto.JobApplicationCreateRequest;
+import com.careerops.backend.application.dto.ApplicationStageResponse;
+import com.careerops.backend.application.dto.JobApplicationDetailResponse;
 import com.careerops.backend.application.dto.JobApplicationListResponse;
 import com.careerops.backend.application.dto.JobApplicationResponse;
 import com.careerops.backend.application.dto.JobApplicationUpdateRequest;
@@ -18,12 +20,15 @@ public class JobApplicationService {
 
     private final JobApplicationRepository repository;
     private final JobPostingRepository jobPostingRepository;
+    private final ApplicationStageRepository applicationStageRepository;
 
     public JobApplicationService(
             JobApplicationRepository repository,
-            JobPostingRepository jobPostingRepository) {
+            JobPostingRepository jobPostingRepository,
+            ApplicationStageRepository applicationStageRepository) {
         this.repository = repository;
         this.jobPostingRepository = jobPostingRepository;
+        this.applicationStageRepository = applicationStageRepository;
     }
 
     public JobApplicationResponse create(JobApplicationCreateRequest request) {
@@ -43,8 +48,12 @@ public class JobApplicationService {
         return findResponseById(saved.getId());
     }
 
-    public JobApplicationResponse findById(Long id) {
-        return findResponseById(id);
+    public JobApplicationDetailResponse findById(Long id) {
+        JobApplicationResponse application = findResponseById(id);
+        var stages = applicationStageRepository.findByJobApplicationIdOrderBySortOrderAsc(id).stream()
+                .map(ApplicationStageResponse::from)
+                .toList();
+        return JobApplicationDetailResponse.from(application, stages);
     }
 
     public JobApplicationListResponse search(ApplicationStatus status, Pageable pageable) {

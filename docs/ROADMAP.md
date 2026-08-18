@@ -179,6 +179,40 @@ User/Auth 도메인은 추가하지 않고, 전형 단계별 일정/결과(`Appl
       round(1차 통과) 거쳐 80/80 테스트 통과(기존 66 + 신규 14)
       (`.ai/tasks/APPLICATION-001.md`).
 
+## Phase 10 — ApplicationStage 도메인(전형 단계별 일정/결과 관리) (완료)
+
+목표: 하나의 `JobApplication` 안에서 서류/코딩테스트/필기/면접/최종 등 실제
+채용 전형 단계별 일정과 결과를 관리할 수 있게 한다. Calendar/알림/AI 기능은
+이번 Phase에서 다루지 않고 `ApplicationStage` 도메인과 기본 관리 API까지만
+만든다.
+
+- [x] APPLICATION-002 — 신규 `ApplicationStage` entity(`JobApplication`과
+      동일한 `@ManyToOne(optional=false, fetch=LAZY)` FK 패턴) + `StageType`
+      enum(DOCUMENT/CODING_TEST/WRITTEN/INTERVIEW/FINAL/OTHER, 같은 타입
+      반복 허용) + `StageResult` enum(PENDING/PASSED/FAILED/CANCELLED,
+      not null, 기본값 PENDING) 신설. `sortOrder`는 생성 시 생략하면
+      해당 application의 최대값+1을 자동 할당하고, `UNIQUE(job_application_id,
+      sort_order)` DB 제약을 위반하면 409로 변환(APPLICATION-001의 중복
+      catch 패턴 재사용). 신규 nested API
+      `POST/GET/GET{id}/PATCH/DELETE /api/applications/{applicationId}/stages`
+      5개 엔드포인트, 모든 요청이 부모 `JobApplication` 존재 확인 + stage
+      소속 검증(`findByIdAndJobApplicationId`) 이중 확인을 거친다. PATCH는
+      기존 JobApplication PATCH와 동일하게 null=무변경, `stageType`은 수정
+      불가. `GET /api/applications/{id}`는 신규 `JobApplicationDetailResponse`
+      (JOB-003 detail DTO 패턴 재사용)로 `stages`를 `sortOrder ASC` 포함해
+      반환하고, 목록/생성/수정 응답은 기존 `JobApplicationResponse`
+      그대로 유지해 N+1을 만들지 않는다. `JobApplication.status`와
+      `ApplicationStage.result`는 서로 자동 전이하지 않는다(명시적 관리
+      유지). `application_stages.job_application_id` FK는
+      `ON DELETE CASCADE`로, `JobPosting`→`JobApplication`의 NO ACTION
+      컨벤션(ADR-0016)과 의도적으로 다르게 결정했다(ADR-0017 — `ApplicationStage`는
+      `JobApplication` 없이는 독립적 의미가 없는 진짜 aggregate 내부
+      데이터라는 근거). 신규 migration `V6__create_application_stages_table.sql`,
+      신규 metric 없음(일반 CRUD). 구현 2 round(1차 최초 구현, 2차는 테스트
+      코드의 Hibernate persistence context 문제 수정 — production 코드
+      무변경) + 리뷰 1 round(1차 통과) 거쳐 92/92 테스트 통과(기존 80 +
+      신규 12)(`.ai/tasks/APPLICATION-002.md`).
+
 ### Phase 7 이후 후보
 
 - **`AlioDetailEnrichmentService` 트랜잭션 재구조화(동시성 강화)** — 같은
@@ -191,13 +225,6 @@ User/Auth 도메인은 추가하지 않고, 전형 단계별 일정/결과(`Appl
   catch-and-continue가 불가능해 "작은 수정"으로 끝나지 않는다(COLLECT-006/
   ADR-0015). COLLECT-006의 run-level lock이 이 race의 발생 창을 사실상
   닫아 우선순위가 낮아졌지만, 완전히 해소된 것은 아니다.
-
-### Phase 9 이후 후보
-
-- **APPLICATION-002 — 전형 단계(`ApplicationStage`) 관리** — `JobApplication`
-  1건당 서류/필기/면접/최종 등 여러 전형 단계와 각각의 `scheduledAt`/
-  `result`/`memo`를 관리(ADR-0016에서 역할 분리를 미리 설계해둠). 사용자
-  승인 후 착수.
 
 ### Phase 6 이후 후보
 
