@@ -1630,3 +1630,113 @@ DB 기본 원자성을 최대한 재사용, 별도 상태 머신/audit framework
 교체하거나 멀티 provider를 지원해야 하는 시점이 오면 이번 최소
 abstraction(`DocumentExtractionClient`)을 그대로 확장하되, 지금은 그
 필요가 없다.
+
+---
+
+## ADR-0025: ADR-0022 결정 4 정정 — `ImportBatch.complete()`는
+## conditional UPDATE가 아니라 `findByIdForUpdate` 잠금 + 별도 조회로
+## "PENDING candidate 없음"을 확인해야 한다
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: FIX-002 (원 결정: PKB-006/ADR-0022)
+
+**문제**: `ImportCandidateConcurrencyTest#concurrentCompleteAndCreatePreserveBatchInvariant`가
+clean main HEAD에서 반복 실행 시 약 60%(35회 중 22회) 확률로
+`assertThat(pending).isFalse()`에서 실패했다. `batchService.complete()`가
+200을 반환했는데도 그 batch에 실제로 `PENDING` candidate가 존재하는,
+"COMPLETED batch는 PENDING candidate를 가질 수 없다"(ADR-0022 결정 4)
+불변식 위반 상태가 재현됐다.
+
+**원인 진단(재현 근거)**: 애플리케이션/Hibernate를 배제하고 두 개의 raw
+psql 세션으로 직접 재현했다 — 세션 A가 `SELECT ... FOR UPDATE`로
+`import_batches` row를 잠근 뒤 `import_candidates`에 `PENDING` row를
+INSERT하고 COMMIT, 세션 B는 A가 lock을 쥔 동안
+`UPDATE import_batches ... WHERE status='OPEN' AND NOT EXISTS (SELECT 1
+FROM import_candidates WHERE status='PENDING') ...`를 실행해 A의 lock을
+기다렸다. A가 커밋한 뒤 B의 UPDATE가 unblock됐을 때, **B는 여전히
+성공해서 batch를 COMPLETED로 만들었다** — A가 막 커밋한 PENDING
+candidate가 존재하는데도.
+
+이는 PostgreSQL READ COMMITTED의 문서화된 caveat이다: UPDATE가 대상
+row의 lock을 기다리다가(EvalPlanQual) lock을 쥔 트랜잭션이 커밋되면,
+**그 row 자신**은 최신 커밋 버전으로 재평가되지만 **그 UPDATE 문의
+subquery가 참조하는 다른 테이블**(`import_candidates`)은 원래 그
+UPDATE 문이 시작될 때 잡힌 snapshot으로 평가된다. 즉
+`completeIfNoPending`의 `NOT EXISTS (SELECT ... FROM import_candidates
+...)`는 lock 대기 도중 커밋된 INSERT를 보지 못한다.
+
+ADR-0022 결정 4는 "두 경로가 같은 `import_batches` row lock을 두고
+경쟁하므로 나중 커밋은 항상 최신 상태를 보고 올바르게 성공/409를
+결정한다"고 가정했는데, 이 가정은 **lock의 대상이 되는 row 자신에는**
+맞지만 **그 row를 잠근 SQL 문의 subquery가 참조하는 다른 테이블에는
+적용되지 않는다** — 실제로는 틀린 가정이었다. `ImportCandidateService`의
+approve/reject concurrency(`transitionIfPending`, ADR-0022 결정 2)는
+이 문제가 없다 — 그 UPDATE의 조건(`status='PENDING'`)이 잠그는 row
+자신의 컬럼만 재확인하고 다른 테이블을 참조하지 않기 때문이다. 두
+동시성 보호가 겉보기엔 같은 패턴("조건부 UPDATE 하나")이었지만,
+"조건이 자기 자신의 컬럼만 보는가, 다른 테이블을 subquery로 보는가"에
+따라 안전성이 갈린다는 점이 이번에 새로 확인됐다.
+
+**결정**:
+
+1. `ImportBatch.complete()`는 `completeIfNoPending` 단일 conditional
+   UPDATE를 버리고, candidate 생성 경로(`ImportCandidateService.create()`)와
+   **동일한** `findByIdForUpdate()`(`@Lock(PESSIMISTIC_WRITE)`)로 batch
+   row를 먼저 잠근 뒤, **별도의 새 SELECT 문**(`existsByImportBatchIdAndStatus`,
+   이미 `ImportCandidateRepository`에 존재)으로 PENDING candidate 존재
+   여부를 확인하고, 문제 없으면 `ImportBatch.markCompleted()`로 상태를
+   바꾼다.
+   - 잠금 대상 row 자신은 `findByIdForUpdate()`가 SELECT FOR UPDATE의
+     본래 목적대로 항상 최신 커밋 버전을 반환하므로 `status` 확인은
+     그대로 안전하다.
+   - PENDING 존재 확인은 잠금을 획득한 **이후에** 실행되는 완전히 새로운
+     SQL 문이므로, READ COMMITTED에서 그 문 자신의 시작 시점 snapshot을
+     새로 받는다 — lock 대기 중 커밋된 변경을 정확히 반영한다.
+   - candidate 생성 경로도 이미 같은 `findByIdForUpdate()`를 거치므로,
+     두 경로 모두 batch row에 대해 완전히 직렬화된다(한쪽이 lock을
+     쥐고 있으면 다른 쪽은 그 트랜잭션이 끝날 때까지 대기).
+2. **새로운 locking 전략이나 분산 락은 도입하지 않는다** — ADR-0022가
+   이미 candidate 생성 경로에 도입해둔 `PESSIMISTIC_WRITE` 잠금을
+   complete() 경로에도 동일하게 적용해 원래 ADR-0022가 의도했던(그러나
+   실제로는 candidate 생성 쪽에만 적용되고 complete() 쪽은 적용되지
+   않았던) 대칭적 보호를 완성하는 것으로, 기존에 이미 승인된 primitive를
+   재사용한다.
+3. `completeIfNoPending`(단일 conditional UPDATE)은 삭제한다 — 안전하지
+   않은 패턴을 코드베이스에 남겨 다른 곳에서 같은 실수가 재현되는 것을
+   막는다.
+
+**대안**:
+- **subquery 대상(`import_candidates`)에도 `FOR UPDATE`/`FOR SHARE` lock
+  힌트 추가** — 기각. JPQL `@Modifying UPDATE`의 subquery에는 `FOR
+  UPDATE`를 표현할 방법이 없고(네이티브 SQL이 필요), 설령 가능해도
+  "그 batch의 모든 PENDING candidate row를 잠그는" phantom-row 문제
+  (아직 없는 row는 잠글 수 없음)가 별도로 남아 근본 해결이 아니다.
+- **트랜잭션 isolation을 SERIALIZABLE로 올림** — 기각. 이 하나의
+  메서드만을 위해 isolation level을 바꾸면 serialization failure(재시도
+  필요)가 새로 발생할 수 있는데, 이번 FIX 범위는 "retry 추가 금지"이고
+  격리 수준 변경은 이 프로젝트의 나머지 모든 `@Transactional` 경로와
+  일관성이 깨지는 더 큰 변경이다. 이번 결정 1의 "잠금 후 별도 문으로
+  재조회"가 이 프로젝트 규모에서 훨씬 최소한의 수정이다.
+- **`import_candidates`에 partial UNIQUE index나 DB CHECK 제약으로
+  강제** — 기각. "이 batch에 PENDING candidate가 없어야 COMPLETED"라는
+  조건은 두 테이블에 걸친 불변식이라 단일 테이블 제약으로 표현할 수
+  없다(Postgres는 cross-table CHECK 제약을 지원하지 않는다). 별도
+  트리거가 필요한데, 이는 이 프로젝트가 계속 피해온 "필요 이상의
+  DB 레벨 로직"이다.
+
+**이유**: "필요한 것보다 새로운 locking primitive를 추가하지 않는다"는
+기존 원칙(ADR-0022)을 그대로 지키면서, 이미 존재하는 `PESSIMISTIC_WRITE`
+lock을 두 경쟁 경로(생성/완료) 모두에 실제로 적용하는 것으로 버그를
+없앤다 — 새 lock 종류, 분산 락, retry, isolation level 변경 전부
+불필요했다.
+
+**영향**: `ImportBatch.complete()`가 이제 candidate 생성과 완전히 같은
+잠금 순서를 거치므로, 두 요청이 동시에 들어오면 한쪽이 다른 쪽의 전체
+트랜잭션이 끝날 때까지 대기한다 — 단일 사용자 MVP 규모에서 지연은
+무시할 수준이다. `ImportCandidateConcurrencyTest`를 포함한 기존 동시성
+테스트/Acceptance Criteria는 코드 변경 없이 그대로 유지되며, 이번
+수정으로 반복 실행 시 항상 통과함을 확인했다(FIX-002 검증 기록 참고).
+"조건부 UPDATE가 곧 안전한 concurrency 보장"이라는 가정은 앞으로 이
+프로젝트에서 **그 조건이 자기 자신의 컬럼만 참조할 때만** 유효하다는
+점을 다른 Task/Task 리뷰에서도 전제로 삼는다.

@@ -8,16 +8,18 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.transaction.annotation.Transactional;
-import java.time.Instant;
 
 @Service
 public class ImportBatchService {
     private final ImportBatchRepository repository;
     private final SourceDocumentRepository sourceDocumentRepository;
+    private final ImportCandidateRepository candidateRepository;
 
-    public ImportBatchService(ImportBatchRepository repository, SourceDocumentRepository sourceDocumentRepository) {
+    public ImportBatchService(ImportBatchRepository repository, SourceDocumentRepository sourceDocumentRepository,
+                              ImportCandidateRepository candidateRepository) {
         this.repository = repository;
         this.sourceDocumentRepository = sourceDocumentRepository;
+        this.candidateRepository = candidateRepository;
     }
 
     public ImportBatchResponse create(Long sourceDocumentId) {
@@ -40,13 +42,15 @@ public class ImportBatchService {
 
     @Transactional
     public ImportBatchResponse complete(Long id) {
-        if (repository.completeIfNoPending(id, Instant.now()) == 0) {
-            ImportBatch batch = repository.findById(id)
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    batch.getStatus() == ImportBatchStatus.COMPLETED
-                            ? "import batch already completed" : "import batch has pending candidates");
+        ImportBatch batch = repository.findByIdForUpdate(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (batch.getStatus() != ImportBatchStatus.OPEN) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "import batch already completed");
         }
-        return ImportBatchResponse.from(repository.findById(id).orElseThrow());
+        if (candidateRepository.existsByImportBatchIdAndStatus(id, ImportCandidateStatus.PENDING)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "import batch has pending candidates");
+        }
+        batch.markCompleted();
+        return ImportBatchResponse.from(repository.save(batch));
     }
 }

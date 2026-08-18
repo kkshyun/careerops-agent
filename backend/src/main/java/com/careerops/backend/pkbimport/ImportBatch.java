@@ -59,4 +59,9 @@ public class ImportBatch {
         this.extractionModel = model;
         this.extractionPromptVersion = promptVersion;
     }
+
+    public void markCompleted() {
+        this.status = ImportBatchStatus.COMPLETED;
+        this.completedAt = Instant.now();
+    }
 }
