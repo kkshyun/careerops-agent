@@ -284,6 +284,45 @@ JobPosting 매칭이 사용할 수 있는 안정적인 structured PKB schema를
 했지만 Claude가 로컬에서 매 단계 재실행해 최종 125/125 전체 통과를
 확인했다. 3개 Task 전부 1차 리뷰에서 바로 PASS(수정 요청 없음).
 
+## Phase 13 — PKB 문서 Import 파이프라인 (진행중, PKB-005 완료)
+
+목표: 이력서/포트폴리오/경험정리 등 기존 문서를 PKB로 가져오기 위한
+import 기반을 만든다. 핵심 제약(AGENTS.md)은 "AI/사람이 만든 후보를
+검토 없이 곧바로 PKB의 확정 사실로 저장하지 않는다"이며, 이를 위해
+3계층 provenance 모델(`SourceDocument`/`ImportBatch`/`ImportCandidate`)과
+승인 게이트를 설계했다(ADR-0021). 범위가 넓어 PKB-005/PKB-006으로
+순차 분리했고, 파일 업로드/PDF·DOCX 파싱/LLM 구조화 추출은 이번
+Phase에서 다루지 않는다.
+
+- [x] PKB-005 — `SourceDocument`(원문 텍스트 직접 등록, `documentType`
+      RESUME/PORTFOLIO/EXPERIENCE_NOTE/COVER_LETTER/OTHER,
+      `contentHash` SHA-256 서버 계산·참고용/UNIQUE 없음)/`ImportBatch`
+      (문서별 검토 작업 단위, 생성 시 항상 `OPEN`) provenance 등록 기반.
+      `CREATE/GET(목록,pagination,documentType 필터)/GET{id}
+      /api/career/imports/documents`, `POST .../documents/{id}/batches`,
+      `GET(목록,sourceDocumentId 필터)/GET{id} /api/career/imports/batches`.
+      `rawText`는 목록 DTO에서 제외, 단건/생성 응답에만 포함. `ImportCandidate`/
+      career entity provenance 컬럼/파일 업로드/파싱/LLM은 미포함(PKB-006
+      이후). 신규 migration `V11__create_source_documents_table.sql`,
+      `V12__create_import_batches_table.sql`. Codex round 3(Jackson
+      2→3 import 수정, JsonPath 문자열 length 검증 방식 수정)까지 거쳐
+      리뷰 1 round(1차 PASS) 후 146/146 테스트 통과(기존 131 + 신규
+      15)(`.ai/tasks/PKB-005.md`, `.ai/reviews/PKB-005-review-1.md`).
+
+### Phase 13 이후 후보
+
+- **PKB-006** — `ImportCandidate`(검토 후보, targetType+JSON payload)
+  생성(수동 입력 API)/목록/승인/거부 흐름과, 승인 시 기존
+  `CareerExperience`/`Certification`/`Education`/`Award` entity에
+  provenance 컬럼(`sourceType`/`sourceImportCandidateId`)을 추가해 실제
+  PKB에 반영하는 로직. PKB-005 완료 후 착수(ADR-0021).
+- **PKB-007** — 파일 업로드(multipart)+PDF/DOCX 텍스트 추출. 파서
+  dependency(PDFBox/POI/Tika 등) 선택이 필요해 별도 Task/ADR로 분리.
+- **PKB-008** — LLM 기반 구조화 추출(`SourceDocument.rawText` →
+  `ImportCandidate` 자동 생성). AI provider 선택/structured output/
+  schema validation/parse failure handling/할루시네이션 방지가 필요해
+  별도 Task/ADR로 분리.
+
 ### Phase 7 이후 후보
 
 - **`AlioDetailEnrichmentService` 트랜잭션 재구조화(동시성 강화)** — 같은

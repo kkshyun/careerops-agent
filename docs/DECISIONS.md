@@ -1196,3 +1196,111 @@ row 쓰기의 원자성 문제다.
 기본으로 붙이는 것은 아니며, 여전히 "read만 하거나 단일 write로 끝나는"
 기존 Service(예: `JobApplicationService`, `ApplicationStageService`)는
 무-트랜잭션 컨벤션을 유지한다.
+
+---
+
+## ADR-0021: PKB 문서 Import 파이프라인 v0 — 3계층 provenance 모델
+## (`SourceDocument`/`ImportBatch`/`ImportCandidate`) + 승인 전 저장 금지
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: PKB-005, PKB-006(예정)
+
+**문제(총괄)**: PKB(`CareerExperience`/`Certification`/`Education`/`Award`,
+PKB-001~004)는 지금까지 사람이 API로 직접 입력한 데이터만 저장해왔다.
+이번 Phase부터 "사용자가 붙여넣은 문서 원문 → (향후 AI가 추출한) 후보
+데이터 → 사람이 검토/승인 → PKB에 반영"이라는 import 파이프라인을
+설계해야 한다. AGENTS.md의 핵심 제약("AI가 사용자가 하지 않은 경험/수치를
+만들어내지 못하게 막는다")상, 이 파이프라인은 **AI/사람이 만든 후보를
+검토 없이 곧바로 PKB의 확정 사실로 저장하는 경로를 하나도 가져서는
+안 된다.** 이를 위해 서로 연결된 7개의 하위 설계 결정이 필요했다.
+
+**결정**:
+
+1. **Provenance를 3개 테이블로 분리한다**(`SourceDocument`/`ImportBatch`/
+   `ImportCandidate`) — 병합하지 않는다. `SourceDocument`는 사용자가
+   등록한 원문(문서)의 정체성, `ImportBatch`는 그 문서에 대한 "1회
+   검토/추출 시도" 단위, `ImportCandidate`는 그 시도에서 나온 개별 검토
+   대상이다. 같은 문서를 다시 분석(재import)하는 경우 새
+   `ImportBatch`만 추가되고 `SourceDocument`는 재사용된다.
+2. **`ImportCandidate.payload`는 JSON을 담은 `TEXT` 컬럼**으로 저장한다
+   (`CareerExperience`/`Certification`/`Education`/`Award`를 각각 그대로
+   복제한 4개의 정형 candidate 테이블을 만들지 않는다). 서비스 레이어가
+   Jackson으로 직렬화/역직렬화하고, 승인 시점에 대상 도메인의 기존
+   `*CreateRequest` record로 재역직렬화 + `@Valid` 재검증한다.
+3. **`career` 패키지는 `pkbimport` 패키지를 알지 못하는 단방향 의존만
+   허용**한다. Provenance는 `career_experiences`/`career_certifications`/
+   `career_educations`/`career_awards`에 각각 `source_type`(enum,
+   MANUAL/IMPORT)과 `source_import_candidate_id`(plain `Long` 컬럼, DB
+   FK는 있지만 JPA `@ManyToOne` 관계는 만들지 않음)를 직접 추가해 기록한다.
+   별도 polymorphic provenance 관계 테이블은 만들지 않는다.
+4. **파일 업로드(multipart)/PDF·DOCX 텍스트 추출/LLM 기반 구조화 추출은
+   이번 Phase(PKB-005/PKB-006)에서 명시적으로 배제**한다. `docs/ROADMAP.md`에
+   PKB-007(파일 업로드+텍스트 추출)/PKB-008(LLM 구조화 추출) 후보로만
+   남기고, 이번엔 사용자가 원문 텍스트를 직접 붙여넣는 경로만 만든다.
+5. **동일 `ImportCandidate`의 재승인/재거부 방지는 DB UNIQUE 제약이 아니라
+   애플리케이션 상태 체크**(`status`가 `PENDING`일 때만 승인/거부 가능,
+   아니면 409)로 구현한다.
+6. **문서 재import는 막지 않는다.** `SourceDocument.contentHash`(원문의
+   SHA-256)는 dedup을 강제하는 DB UNIQUE 제약이 아니라 참고용 정보로만
+   저장한다.
+7. **기존 PKB row(PKB-006에서 provenance 컬럼이 실제로 추가될 때)는
+   전부 `source_type = 'MANUAL'`로 채운다.** 이 값은 "임의로 지어낸
+   기본값"이 아니라 **사실 그 자체**다 — 이번 Phase 이전에는 import
+   기능 자체가 존재하지 않았으므로, 지금까지 저장된 모든 row는 실제로
+   전부 사람이 API로 직접 입력한 것이다. `source_import_candidate_id`는
+   기존 row와 향후 수동 생성 row 모두 `NULL`로 유지하고, 존재하지 않는
+   candidate 참조를 임의로 만들지 않는다.
+
+**대안**:
+- (1) **단일 테이블로 병합**(`import_batches`에 `fileName`/`documentType`/
+  `contentHash`까지 통합) — 기각. "같은 문서를 다시 분석"이 1:1이 되어,
+  실제로 필요해지는 시점(PKB-008)에 테이블을 다시 쪼개는 마이그레이션이
+  필요해진다.
+- (2) **4개 정형 candidate 테이블**(각 대상 entity의 필드를 그대로 복제) —
+  기각. entity/migration/DTO가 4배로 늘어나는데, 검토 워크플로우(제안→
+  목록→승인/거부) 자체는 4개 모두 동일해 구조적 이득이 적다(ADR-0020의
+  "정말 공통인가를 먼저 판단한다" 원칙 재적용). payload 내부를 SQL로
+  질의할 요구도 없다.
+- (2) **native `jsonb` 컬럼 타입 매핑** — 기각(이번 시점). 이 프로젝트
+  첫 semi-structured 컬럼인데, payload 내부를 질의할 필요가 전혀 없어
+  이점이 없고, Boot 4.1/Hibernate 7의 또 다른 미검증 영역(`ARCHITECTURE.md`의
+  누적되는 Boot 4.1 함정 목록)을 새로 열 이유가 없다.
+- (3) **별도 polymorphic provenance 관계 테이블**(target_type+target_id
+  조합으로 4개 테이블을 참조) — 기각. 4개의 서로 다른 테이블에 대한 진짜
+  참조 무결성을 가질 수 없는 polymorphic FK이고, MVP 규모에 과한
+  추상화다.
+- (4) **PDF/DOCX 파싱, LLM 추출까지 한 Task/Phase에 포함** — 기각. 파싱은
+  새 프로덕션 dependency(PDFBox/POI/Tika 등) 선택이 필요하고, LLM
+  추출은 이 프로젝트에 아직 전혀 없는 product-facing AI provider 도입
+  결정(provider 선택/구조화 출력/할루시네이션 방지)이 필요해 그 자체로
+  각각 별도 ADR급 판단이다. 이 둘을 provenance+검토/승인 게이트와 묶으면,
+  가장 안정적으로 검증되어야 할 안전장치(검토/승인)가 가장 불안정한
+  부분(prompt 튜닝, provider 이슈)에 종속된다.
+- (5) **재승인/재거부 방지를 DB 제약으로 표현** — 기각. "PENDING에서만
+  전이 가능"은 uniqueness 문제가 아니라 상태 머신 문제라 DB UNIQUE로
+  자연스럽게 표현되지 않는다. `@Transactional` 메서드 안에서 조회 후
+  상태를 확인하고 쓰는 것으로 충분하다(ADR-0016의 409 선례와 동일한
+  수준의 보호, 이 프로젝트의 낮은 동시성 전제에서 충분).
+- (6) **동일 `contentHash` 재등록을 DB UNIQUE로 차단** — 기각. 같은 원문을
+  다른 `documentType`으로 다시 등록하는 것도 정당한 사용일 수 있고,
+  semantic dedup(비슷하지만 다른 문서)은 이번 범위 밖이라 hash 기반
+  강제 차단만 도입하는 것은 어중간하다.
+- (7) **기존 row의 `source_type`을 비워두거나(`nullable`) `UNKNOWN`으로
+  채움** — 기각. 실제로 아는 사실(전부 수동 입력이었다)을 두고 불확실한
+  값을 쓰는 것은 오히려 부정확하다.
+
+**이유(종합)**: 이 프로젝트가 지켜온 "명시적으로 작은 도메인 우선,
+소비자 불확실한 필드/관계는 만들지 않는다"(ADR-0018/0020) 원칙과, 이번
+Phase의 진짜 핵심 제약("AI 추출 결과를 검토 없이 확정 사실로 저장하지
+않는다")을 동시에 만족시키는 조합이다. provenance/candidate 모델은
+파일 업로드나 LLM 없이도 그 자체로 완결되게 설계해, 검토/승인 게이트가
+아직 존재하지 않는 자동 추출 기능과 무관하게 먼저 검증될 수 있게 했다.
+
+**영향**: PKB-005는 `SourceDocument`/`ImportBatch`(사용자가 원문 텍스트를
+직접 등록)만 다루고, `ImportCandidate`와 4개 PKB entity의 provenance
+컬럼은 PKB-006에서 추가된다. PKB-007(파일 업로드+텍스트 추출)/PKB-008(LLM
+구조화 추출)이 실제로 착수될 때, 이번 ADR의 (1)(SourceDocument/ImportBatch
+재사용), (6)(contentHash 참고용 유지) 결정을 전제로 설계해야 한다 — 이때도
+LLM이 만든 candidate가 승인 없이 곧바로 PKB에 쓰이는 경로를 추가해서는
+안 된다(이 ADR의 핵심 제약은 향후 Task에도 그대로 적용된다).

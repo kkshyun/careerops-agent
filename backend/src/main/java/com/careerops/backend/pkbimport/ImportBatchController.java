@@ -1,0 +1,35 @@
+package com.careerops.backend.pkbimport;
+
+import com.careerops.backend.pkbimport.dto.ImportBatchListResponse;
+import com.careerops.backend.pkbimport.dto.ImportBatchResponse;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/career/imports")
+public class ImportBatchController {
+    private final ImportBatchService service;
+
+    public ImportBatchController(ImportBatchService service) {
+        this.service = service;
+    }
+
+    @PostMapping("/documents/{documentId}/batches")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ImportBatchResponse create(@PathVariable Long documentId) {
+        return service.create(documentId);
+    }
+
+    @GetMapping("/batches")
+    public ImportBatchListResponse findAll(@RequestParam(required = false) Long sourceDocumentId,
+                                           @PageableDefault(size = 20) Pageable pageable) {
+        return service.findAll(sourceDocumentId, pageable);
+    }
+
+    @GetMapping("/batches/{id}")
+    public ImportBatchResponse findById(@PathVariable Long id) {
+        return service.findById(id);
+    }
+}
