@@ -237,6 +237,53 @@ AI/RAG/embedding/문서 import는 다루지 않는다. 데이터 모델은 범�
       NEEDS_REVISION, 2차 PASS) 거쳐 100/100 테스트 통과
       (`.ai/tasks/PKB-001.md`).
 
+## Phase 12 — PKB `Certification`/`Education`/`Award` (정형 프로필 확장) (완료)
+
+목표: PKB를 확장해 경험(`CareerExperience`) 이외의 정형 프로필 정보인
+자격증/학력/수상을 구조적으로 저장/조회한다. 문서 import/AI extraction/
+embedding/매칭은 다루지 않는다 — "향후 이력서/포트폴리오 import와
+JobPosting 매칭이 사용할 수 있는 안정적인 structured PKB schema를
+완성한다"가 목표다. 세 도메인은 상속/generic CRUD 없이 독립 entity +
+독립 Task로 분리했다(ADR-0020).
+
+- [x] PKB-002 — `Certification`(자격증). `name`만 필수, 나머지 전 필드
+      (issuer/acquiredDate/expirationDate/credentialId/description)
+      nullable. `score` 필드는 만들지 않음(시험마다 점수 체계가 달라
+      후속 `ProfileFact` 후보로 분리). `CREATE/GET(목록,pagination)/
+      GET{id}/PATCH/DELETE /api/career/certifications`, 정렬은
+      `acquiredDate DESC NULLS LAST` 고정. `@Transactional` 없음(단일
+      row CRUD). 신규 migration `V8__create_career_certifications_table.sql`.
+      리뷰 1 round(1차 PASS) 거쳐 108/108 테스트 통과(기존 100 + 신규
+      8)(`.ai/tasks/PKB-002.md`, `.ai/reviews/PKB-002-review-1.md`).
+- [x] PKB-003 — `Education`(학력). `institution`만 필수. `degree`
+      (`HIGH_SCHOOL/ASSOCIATE/BACHELOR/MASTER/DOCTORATE/OTHER`)/`status`
+      (`ENROLLED/ON_LEAVE/GRADUATED/EXPECTED_GRADUATION/WITHDRAWN`) enum
+      신설(둘 다 nullable). `gpa`/`gpaScale`을 이 프로젝트 최초로
+      `BigDecimal(precision=5,scale=2)`로 구조화(둘 다 있거나 둘 다
+      없어야 하고, 있으면 `gpa <= gpaScale` 검증 — PATCH는 병합된 값
+      기준으로 재검증). `CREATE/GET(목록,pagination)/GET{id}/PATCH/
+      DELETE /api/career/educations`, 정렬은 `startDate DESC NULLS
+      LAST` 고정. `@Transactional` 없음. 신규 migration
+      `V9__create_career_educations_table.sql`. 리뷰 1 round(1차 PASS)
+      거쳐 117/117 테스트 통과(기존 108 + 신규 9)(`.ai/tasks/PKB-003.md`,
+      `.ai/reviews/PKB-003-review-1.md`).
+- [x] PKB-004 — `Award`(수상). `title`만 필수. `category` 필드/
+      `CareerExperience` FK 모두 만들지 않음(소비자 불확실로 보류,
+      ADR-0020). `CREATE/GET(목록,pagination)/GET{id}/PATCH/DELETE
+      /api/career/awards`, 정렬은 `awardedDate DESC NULLS LAST` 고정.
+      `@Transactional` 없음. 신규 migration
+      `V10__create_career_awards_table.sql`. 리뷰 1 round(1차 PASS)
+      거쳐 125/125 테스트 통과(기존 117 + 신규 8)(`.ai/tasks/PKB-004.md`,
+      `.ai/reviews/PKB-004-review-1.md`).
+
+세 Task 모두 `sourceType`/`sourceReference`(provenance), keyword filter,
+공용 tag 시스템, `JobPosting`과의 FK, 매칭 로직은 다루지 않았다(PKB-001과
+동일 원칙, ADR-0020). PKB-002/003/004는 서로 독립적이라 Codex에게 병렬로
+위임해 구현/리뷰했고(migration 번호 V8/V9/V10 충돌 없이 순서대로 확정),
+세 Codex round 모두 sandbox 제약으로 자체 `./gradlew test` 실행은 못
+했지만 Claude가 로컬에서 매 단계 재실행해 최종 125/125 전체 통과를
+확인했다. 3개 Task 전부 1차 리뷰에서 바로 PASS(수정 요청 없음).
+
 ### Phase 7 이후 후보
 
 - **`AlioDetailEnrichmentService` 트랜잭션 재구조화(동시성 강화)** — 같은

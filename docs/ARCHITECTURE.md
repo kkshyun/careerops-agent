@@ -2,13 +2,19 @@
 
 ## 현재 상태
 
-**Phase 10 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 12 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
 계층형 최상위 패키지로는 나누지 않는다 — 이유는 각 도메인 Task 명세
 참고). 실제 모듈 구조/API 설계는 각 기능의 Task 명세(`.ai/tasks/`)와 함께
 구체화되고, 이 문서에도 반영된다.
+
+`com.careerops.backend.career` 패키지는 `CareerExperience`(PKB-001)에
+`Certification`/`Education`/`Award`(PKB-002/003/004)를 더해 PKB(Personal
+Knowledge Base) 4개 entity를 갖는다. 네 entity는 상속/generic CRUD 없이
+각각 독립 Repository/Service/Controller/DTO로 구현되어 있다(ADR-0018/
+ADR-0020).
 
 ## 예정 기술 스택
 

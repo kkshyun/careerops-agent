@@ -1084,6 +1084,71 @@ OTHER)만 다루는 `CareerExperience`(자격증/학력/수상은 이번 Phase�
 
 ---
 
+## ADR-0020: PKB `Certification`/`Education`/`Award` — 독립 entity 3개,
+## 상속·generic CRUD 배제 + GPA/degree·status 구조화 + Award-CareerExperience FK 보류
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: PKB-002, PKB-003, PKB-004
+
+**문제**: ADR-0018에서 미룬 자격증/학력/수상을 PKB-001 완료 후 구조화하는
+Phase(PKB-002)를 시작하며 네 가지 설계 판단이 필요했다. (1) 세 도메인이
+구조적으로 비슷한 CRUD(생성/목록/단건/PATCH/삭제)라는 이유로 상속 구조나
+generic `Repository`/`Service`/`Controller`를 도입할지, 아니면 명시적으로
+독립된 entity 3개로 둘지. (2) `Education`의 학점을 `BigDecimal`로 구조화할지
+자유 텍스트로 둘지. (3) `Education.degree`/`status`를 enum으로 강제할지
+String으로 둘지. (4) `Award`와 `CareerExperience`(우수상↔수상 프로젝트) 사이에
+지금 FK를 만들지.
+
+**결정**:
+1. `Certification`/`Education`/`Award`를 각각 독립된 entity + Repository +
+   Service + Controller + DTO 세트로 만든다. 공통 부모 클래스, generic
+   `Repository<T, ID>` 확장, 공용 CRUD 추상화를 도입하지 않는다.
+2. `Education.gpa`/`gpaScale`을 `BigDecimal` 2컬럼(둘 다 nullable)으로
+   구조화한다.
+3. `Education.degree`(`HIGH_SCHOOL/ASSOCIATE/BACHELOR/MASTER/DOCTORATE/OTHER`)와
+   `status`(`ENROLLED/ON_LEAVE/GRADUATED/EXPECTED_GRADUATION/WITHDRAWN`)를
+   `EnumType.STRING` enum으로 강제한다. 둘 다 nullable — `OTHER`는
+   고정 enum이 못 담는 값을 위한 escape hatch일 뿐, 값 자체를 필수로
+   강제하지 않는다.
+4. `Award`와 `CareerExperience` 사이에 FK를 만들지 않는다 — 독립 entity로
+   유지한다.
+
+**대안**:
+- **상속 구조 / generic CRUD**(공통 부모 엔티티, `GenericPkbRepository<T>`
+  등) — 기각. 세 도메인의 필드가 근본적으로 다르고(`credentialId`는
+  Certification 전용, `gpa`/`gpaScale`은 Education 전용), validation
+  규칙도 도메인마다 다르다(날짜 비교 vs GPA 비교 vs 없음). 공통 추상화를
+  만들면 오히려 도메인별 특수 규칙을 표현하기 위한 우회가 필요해지고,
+  `JobApplication`/`ApplicationStage`/`CareerExperience`가 이미 유지해온
+  "명시적으로 작은 도메인" 컨벤션과도 어긋난다.
+- **GPA를 String 자유 표기**(`"3.8/4.5"`) — 기각. 검증 로직이 필요 없어
+  더 단순하지만, 향후 매칭(MATCH-001 후보)에서 숫자 비교가 필요해질
+  가능성이 있고 지금 구조화하는 비용이 낮다.
+- **degree/status를 String으로 둠** — 기각(ADR-0016의 "내부 통제 어휘는
+  실제 Java enum, 외부 원본 신뢰 데이터는 String" 원칙 재적용). 다만
+  해외 학위·특수 과정 등 고정 enum이 못 담는 값을 위해 `OTHER`를 둔다.
+- **`Award.careerExperienceId` nullable FK를 지금 추가** — 기각. 이
+  관계를 소비할 로직(UI/매칭)이 이번 Phase에 전혀 없고, 방향성(단순
+  FK/역방향/조인 테이블) 자체도 아직 불확실해 지금 정하면 나중에 틀릴
+  위험이 크다. "이 프로젝트로 받은 상"이라는 서사는 이미 `Award.description`
+  자유 텍스트로 표현 가능하다. Additive migration으로 나중에 추가하는
+  비용은 낮다.
+
+**이유**: PKB-001부터 유지해온 "명시적인 작은 도메인 우선, 과도한
+추상화·불필요한 패턴 회피"(AGENTS.md) 원칙을 반복 적용했다. GPA/enum
+구조화는 향후 매칭 소비자가 비교적 명확히 예견되는 필드에 한해서만
+선제 투자하고, 소비자가 불확실한 FK는 만들지 않았다.
+
+**영향**: 앞으로 구조적으로 비슷한 CRUD 도메인이 더 늘어나도(예: 향후
+`ProfileFact` 후보) 상속/generic 구조를 기본값으로 삼지 않는다 — 매번
+"정말 공통인가"를 먼저 판단한다. `Certification`/`Education`/`Award`
+스키마는 매칭(MATCH-001 후보) 설계 시 `JobPosting`과의 FK 없이 참조되는
+것을 전제로 한다. `Award`↔`CareerExperience` 관계가 실제로 필요해지면
+별도 Task에서 additive migration으로 판단한다.
+
+---
+
 ## ADR-0019: `CareerExperience` 저장에 이 프로젝트 최초로
 ## Service-level `@Transactional` 도입 (ADR-0015 "no @Transactional" 전제의 예외)
 
