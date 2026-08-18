@@ -13,10 +13,10 @@ public interface CareerExperienceRepository extends JpaRepository<CareerExperien
           e.id,e.type,e.title,e.organization,e.role,e.startDate,e.endDate,e.summary,e.createdAt,e.updatedAt)
         FROM CareerExperience e
         WHERE (:type IS NULL OR e.type = :type)
-          AND (:keyword IS NULL OR LOWER(e.title) LIKE LOWER(CONCAT('%', :keyword, '%')))
+          AND (:keywordPattern IS NULL OR LOWER(e.title) LIKE :keywordPattern)
         ORDER BY e.updatedAt DESC
         """)
     Page<CareerExperienceResponse> search(@Param("type") ExperienceType type,
-                                          @Param("keyword") String keyword, Pageable pageable);
+                                          @Param("keywordPattern") String keywordPattern, Pageable pageable);
     Page<CareerExperience> findByType(ExperienceType type, Pageable pageable);
 }

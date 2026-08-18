@@ -34,7 +34,11 @@ public class CareerExperienceService {
 
     public CareerExperienceListResponse findAll(ExperienceType type, String keyword, Pageable pageable) {
         int size = Math.min(pageable.getPageSize(), 100);
-        return CareerExperienceListResponse.from(repository.search(type, keyword, PageRequest.of(pageable.getPageNumber(), size)));
+        return CareerExperienceListResponse.from(repository.search(type, keywordPattern(keyword), PageRequest.of(pageable.getPageNumber(), size)));
+    }
+
+    private static String keywordPattern(String keyword) {
+        return keyword == null ? null : "%" + keyword.toLowerCase(Locale.ROOT) + "%";
     }
 
     public CareerExperienceDetailResponse findById(Long id) { return detail(find(id)); }
