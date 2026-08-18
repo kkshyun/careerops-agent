@@ -1425,3 +1425,75 @@ UNIQUE가 아니라 애플리케이션 상태 체크로)을 이미 확정했지�
 한다. LLM 기반 candidate 자동 생성(PKB-008)이 실제로 batch를 채우는
 시점에는, 그 자동 생성 로직도 이번에 만든 candidate 생성 경로(배치 잠금
 포함)를 그대로 재사용하게 된다.
+
+---
+
+## ADR-0023: PKB 문서 파일 업로드 — PDFBox/POI 직접 의존(Tika 배제),
+## 원본 binary 영구 미저장
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: PKB-007
+
+**문제**: ADR-0021 결정 4가 PKB-005/006에서 명시적으로 배제했던 "파일
+업로드(multipart) + PDF/DOCX 텍스트 추출"을 PKB-007에서 구현해야 한다.
+두 가지 판단이 필요했다 — (1) PDF/DOCX 파싱에 어떤 라이브러리를 쓸지(새
+production dependency 도입), (2) 업로드된 원본 파일(binary)을 서버에
+영구 보관할지 여부.
+
+**결정**:
+
+1. **PDF는 Apache PDFBox 3.0.8, DOCX는 Apache POI(`poi-ooxml`) 5.5.1을
+   각각 직접 의존성으로 추가한다.** Maven Central 확인 결과(조사
+   시점 2026-08-18) 둘 다 각 라인의 최신 안정(GA) 버전이고, 둘 다 Java
+   21과 호환된다(PDFBox 3.x는 Java 8+ 요구, POI 5.x도 Java 8+ 요구).
+   Spring Boot 4.1 dependency management(BOM)가 두 라이브러리 버전을
+   관리하지 않으므로 `build.gradle`에 버전을 직접 명시한다.
+2. **Apache Tika(전체 프레임워크)는 도입하지 않는다.** 이번 Phase가
+   지원하는 형식은 PDF/DOCX 2종뿐이라, 수십 종 포맷 자동 감지와 그에
+   따르는 무거운 transitive dependency(포맷별 파서, 선택적 OCR 연동
+   등)를 끌어올 이유가 없다. `DocumentTextExtractor` 인터페이스 뒤에
+   `PdfTextExtractor`/`DocxTextExtractor` 두 구현체만 둔다.
+3. **업로드된 원본 PDF/DOCX binary는 서버에 영구 저장하지 않는다.**
+   흐름은 `MultipartFile`(메모리) → parser → `rawText` 추출 →
+   `SourceDocument.rawText`로 저장 → binary 폐기다. 로컬 filesystem
+   경로, PostgreSQL bytea 컬럼, object storage 어디에도 원본을 남기지
+   않는다.
+4. **zip bomb 등 악성 압축 파일 방어는 Apache POI의 기본 내장 보호를
+   그대로 사용한다.** POI 공식 API(`ZipSecureFile`) 확인 결과, OOXML
+   (XWPF 포함) 파싱 시 압축 해제 비율(`minInflateRatio`, 기본 1%)과
+   엔트리 크기 상한을 자동으로 검사해 zip bomb으로 판단되면 예외를
+   던지는 보호가 **기본 활성화**돼 있다. 별도 라이브러리나 설정을
+   추가하지 않고, 이 기본값을 완화하는 코드도 작성하지 않는다.
+
+**대안**:
+- **Apache Tika 도입** — 기각. "가능하면 직접적인 parser dependency만
+  추가하고 무거운 document framework는 도입하지 않는다"는 이번 Task
+  요구와, 지원 형식이 2종뿐이라는 현재 범위에 비례하지 않는 선택.
+  향후 지원 포맷이 크게 늘어나 포맷별 파서를 하나씩 추가하는 비용이
+  Tika 도입 비용을 넘어서는 시점에 재검토한다.
+- **원본 binary도 함께 영구 저장(파일시스템 또는 object storage)** —
+  기각(이번 시점). 이번 Phase 목표는 "파일 → text → `SourceDocument`"이고
+  원본 보관은 별도 요구(재다운로드, 재파싱, 감사 등)가 있을 때 의미가
+  있는 기능이다. 지금 저장 경로를 만들면 보관 정책(만료/삭제/암호화/
+  접근 제어)까지 함께 설계해야 하는데 아직 그 요구가 확인되지 않았다.
+  필요성이 확인되면 별도 object storage Phase에서 설계한다(PKB-005/006과
+  동일하게 "지금 확실히 필요한 것만 만든다" 원칙).
+- **`ZipSecureFile.setMinInflateRatio()` 등을 프로젝트가 직접 재설정** —
+  기각. 기본값이 이미 합리적인 방어를 제공하고, 이번 Task가 다루는
+  이력서/포트폴리오 DOCX는 일반적인 압축률을 가지므로 기본값을 낮출
+  (완화할) 이유도, 올릴(더 엄격하게 할) 근거도 없다.
+
+**이유**: "최신/유명하다고 무조건 쓰지 않는다"와 "지금 확실히 필요한
+범위에 비례하는 구현만 한다"는 기존 원칙(ADR-0021과 동일선상)을 그대로
+따른다. PDFBox/POI 직접 의존은 이번 Task의 실제 요구(PDF/DOCX 텍스트만
+추출)에 정확히 대응하고, 원본 미저장 결정은 PKB-005/006이 이미 확립한
+"불확실한 미래 요구를 위해 지금 인프라를 만들지 않는다" 패턴을 파일
+업로드 기능에도 동일하게 적용한 것이다.
+
+**영향**: 향후 지원 포맷이 늘어나거나(HWP/이미지 OCR 등) 원본 파일 보관이
+실제로 필요해지면(예: 사용자가 나중에 원본을 다시 내려받고 싶어하는
+요구가 확인되면) 이 ADR을 재검토해야 한다 — 그 시점에 Tika 전환이나
+object storage 도입을 별도 Task/ADR로 다시 판단한다. 지금은
+`SourceDocument.rawText`가 업로드된 문서의 유일하게 보존되는 표현이므로,
+파싱 과정에서 유실된 정보(이미지, 레이아웃, 서식)는 복구할 수 없다.

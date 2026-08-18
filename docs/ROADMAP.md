@@ -284,7 +284,7 @@ JobPosting 매칭이 사용할 수 있는 안정적인 structured PKB schema를
 했지만 Claude가 로컬에서 매 단계 재실행해 최종 125/125 전체 통과를
 확인했다. 3개 Task 전부 1차 리뷰에서 바로 PASS(수정 요청 없음).
 
-## Phase 13 — PKB 문서 Import 파이프라인 (진행중, PKB-006까지 완료)
+## Phase 13 — PKB 문서 Import 파이프라인 (진행중, PKB-007까지 완료)
 
 목표: 이력서/포트폴리오/경험정리 등 기존 문서를 PKB로 가져오기 위한
 import 기반을 만든다. 핵심 제약(AGENTS.md)은 "AI/사람이 만든 후보를
@@ -344,11 +344,38 @@ Phase에서 다루지 않는다.
       해결한 적 있는 같은 종류의 문제였다) 거쳐 리뷰 1 round(1차 PASS)
       후 159/159 테스트 통과(기존 146 + 신규 13)(`.ai/tasks/PKB-006.md`,
       `.ai/reviews/PKB-006-review-1.md`, ADR-0021/ADR-0022).
+- [x] PKB-007 — 파일 업로드(multipart) + PDF/DOCX 텍스트 추출 → 기존
+      `SourceDocument` 생성. `com.careerops.backend.pkbimport.extraction`
+      패키지 신설(`DocumentTextExtractor` 인터페이스 + `PdfTextExtractor`
+      (Apache PDFBox 3.0.8)/`DocxTextExtractor`(Apache POI 5.5.1, 문단+표
+      순서 보존) + 확장자 기반 dispatch `DocumentTextExtractionService`) —
+      Tika 등 무거운 document framework는 도입하지 않고 두 라이브러리를
+      직접 의존성으로 추가했다(ADR-0023). `POST
+      /api/career/imports/documents/upload`(multipart/form-data, `file`+
+      `documentType` 필수) 신설, 기존 rawText 직접 등록 API는 무변경.
+      원본 PDF/DOCX binary는 추출 직후 폐기하고 어디에도 영구 저장하지
+      않는다(ADR-0023). `SourceDocumentService.createFromUpload()`가
+      기존 `create()`를 그대로 재사용하되, `create()`에는 `@Valid`가
+      컨트롤러의 `@RequestBody` 바인딩 시점에만 적용되어 서비스 직접
+      호출로는 우회된다는 점을 확인해 업로드 경로에서 fileName 255자/
+      rawText blank/rawText 50,000자 상한을 명시적으로 재검증한다.
+      50,000자를 초과한 추출 텍스트는 truncate 없이 400으로 거절(사용자
+      승인). multipart 크기 제한은 `max-file-size=10MB`/
+      `max-request-size=11MB`로 분리하고 애플리케이션 레벨에서도
+      `file.getSize()`를 독립적으로 재검증(이중 방어, 사용자 요청 반영).
+      Content-Type과 매직바이트(PDF `%PDF-`/DOCX `PK\x03\x04`) 이중 검증으로
+      확장자만 신뢰하지 않는다. Apache POI의 zip bomb 방어(`ZipSecureFile`
+      기본 min-inflate-ratio)는 완화하지 않고 기본값 유지. 신규 DB
+      migration 없음(`source_documents` 스키마가 이미 필요한 컬럼을
+      모두 가짐). 테스트는 전부 PDFBox/POI로 코드 내 합성한 fixture만
+      사용(실제 사용자 문서 없음). 구현 1 round(1차 최초 구현, sandbox가
+      Codex 자체 `./gradlew test` 실행을 차단해 Claude가 로컬에서
+      재실행)만에 리뷰 1 round(1차 PASS) 통과, 173/173 테스트 통과(기존
+      159 + 신규 14)(`.ai/tasks/PKB-007.md`,
+      `.ai/reviews/PKB-007-review-1.md`, ADR-0023).
 
 ### Phase 13 이후 후보
 
-- **PKB-007** — 파일 업로드(multipart)+PDF/DOCX 텍스트 추출. 파서
-  dependency(PDFBox/POI/Tika 등) 선택이 필요해 별도 Task/ADR로 분리.
 - **PKB-008** — LLM 기반 구조화 추출(`SourceDocument.rawText` →
   `ImportCandidate` 자동 생성). AI provider 선택/structured output/
   schema validation/parse failure handling/할루시네이션 방지가 필요해

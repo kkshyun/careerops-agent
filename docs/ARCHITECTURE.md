@@ -16,6 +16,17 @@ Knowledge Base) 4개 entity를 갖는다. 네 entity는 상속/generic CRUD 없�
 각각 독립 Repository/Service/Controller/DTO로 구현되어 있다(ADR-0018/
 ADR-0020).
 
+`com.careerops.backend.pkbimport` 패키지는 PKB로 문서를 들여오는 3계층
+provenance 모델(`SourceDocument`/`ImportBatch`/`ImportCandidate`,
+ADR-0021/ADR-0022)과 그 아래 `extraction` 서브패키지(PKB-007)로
+구성된다 — `DocumentTextExtractor` 인터페이스 뒤에 `PdfTextExtractor`
+(Apache PDFBox)/`DocxTextExtractor`(Apache POI)를 두고, 확장자 기반으로
+`DocumentTextExtractionService`가 위임한다. `POST
+/api/career/imports/documents/upload`(multipart)로 업로드된 PDF/DOCX에서
+추출한 텍스트만 `SourceDocument.rawText`로 저장하고 원본 binary는 저장하지
+않는다(ADR-0023). LLM 기반 구조화 추출(`rawText` → `ImportCandidate`
+자동 생성)은 아직 없다(PKB-008 후보).
+
 ## 예정 기술 스택
 
 **Backend**

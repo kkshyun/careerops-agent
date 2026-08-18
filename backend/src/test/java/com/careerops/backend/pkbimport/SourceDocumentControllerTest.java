@@ -3,12 +3,14 @@ package com.careerops.backend.pkbimport;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.careerops.backend.pkbimport.extraction.DocumentFixtureSupport;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.annotation.Rollback;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,6 +19,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -30,6 +33,93 @@ class SourceDocumentControllerTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @Autowired SourceDocumentRepository repository;
+
+    @Test
+    void uploadsSyntheticPdfAndDocx() throws Exception {
+        MockMultipartFile pdf = new MockMultipartFile("file", "resume.pdf", MediaType.APPLICATION_PDF_VALUE,
+                DocumentFixtureSupport.pdf("synthetic resume text"));
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(pdf).param("documentType", "RESUME"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.fileName").value("resume.pdf"))
+                .andExpect(jsonPath("$.rawText").value(org.hamcrest.Matchers.containsString("synthetic resume text")))
+                .andExpect(jsonPath("$.contentHash").value(org.hamcrest.Matchers.matchesPattern("[0-9a-f]{64}")));
+
+        MockMultipartFile docx = new MockMultipartFile("file", "portfolio.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                DocumentFixtureSupport.docx("before", true, "after"));
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(docx).param("documentType", "PORTFOLIO"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.rawText", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("before"),
+                        org.hamcrest.Matchers.containsString("left-cell"),
+                        org.hamcrest.Matchers.containsString("after"))));
+    }
+
+    @Test
+    void rejectsInvalidUploadMetadataAndContentWithoutRows() throws Exception {
+        long before = repository.count();
+        byte[] validPdf = DocumentFixtureSupport.pdf("text");
+        MockMultipartFile empty = new MockMultipartFile("file", "empty.pdf", MediaType.APPLICATION_PDF_VALUE, new byte[0]);
+        MockMultipartFile unsupported = new MockMultipartFile("file", "note.txt", MediaType.TEXT_PLAIN_VALUE, "text".getBytes());
+        MockMultipartFile wrongType = new MockMultipartFile("file", "resume.pdf", MediaType.TEXT_PLAIN_VALUE, validPdf);
+        MockMultipartFile wrongMagic = new MockMultipartFile("file", "resume.pdf", MediaType.APPLICATION_PDF_VALUE, "not pdf".getBytes());
+        for (MockMultipartFile file : new MockMultipartFile[]{empty, unsupported, wrongType, wrongMagic}) {
+            mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(file).param("documentType", "RESUME"))
+                    .andExpect(status().isBadRequest());
+        }
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(
+                        new MockMultipartFile("file", "resume.pdf", MediaType.APPLICATION_PDF_VALUE, validPdf)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(
+                        new MockMultipartFile("file", "resume.pdf", MediaType.APPLICATION_PDF_VALUE, validPdf))
+                        .param("documentType", "INVALID"))
+                .andExpect(status().isBadRequest());
+        assertThat(repository.count()).isEqualTo(before);
+    }
+
+    @Test
+    void rejectsNoTextCorruptAndPasswordProtectedDocumentsWithoutLeakingParserDetails() throws Exception {
+        long before = repository.count();
+        MockMultipartFile noText = new MockMultipartFile("file", "blank.pdf", MediaType.APPLICATION_PDF_VALUE,
+                DocumentFixtureSupport.pdf((String) null));
+        MockMultipartFile corrupt = new MockMultipartFile("file", "corrupt.pdf", MediaType.APPLICATION_PDF_VALUE,
+                "%PDF-private-parser-marker".getBytes());
+        MockMultipartFile protectedFile = new MockMultipartFile("file", "protected.pdf", MediaType.APPLICATION_PDF_VALUE,
+                DocumentFixtureSupport.protectedPdf("secret"));
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(noText).param("documentType", "OTHER"))
+                .andExpect(status().isBadRequest());
+        Logger root = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        root.addAppender(appender);
+        try {
+            mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(corrupt).param("documentType", "OTHER"))
+                    .andExpect(status().isBadRequest()).andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("private-parser-marker"))));
+            assertThat(appender.list).extracting(ILoggingEvent::getFormattedMessage)
+                    .noneMatch(message -> message.contains("private-parser-marker"));
+        } finally {
+            root.detachAppender(appender);
+            appender.stop();
+        }
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(protectedFile).param("documentType", "OTHER"))
+                .andExpect(status().isBadRequest());
+        MockMultipartFile corruptDocx = new MockMultipartFile("file", "corrupt.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                new byte[]{'P', 'K', 3, 4, 1, 2, 3});
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(corruptDocx).param("documentType", "OTHER"))
+                .andExpect(status().isBadRequest());
+        assertThat(repository.count()).isEqualTo(before);
+    }
+
+    @Test
+    void storesTraversalLikeNameOnlyAsMetadata() throws Exception {
+        String name = "../../secret.pdf";
+        MockMultipartFile file = new MockMultipartFile("file", name, MediaType.APPLICATION_PDF_VALUE,
+                DocumentFixtureSupport.pdf("safe metadata"));
+        mockMvc.perform(multipart(DOCUMENTS_URL + "/upload").file(file).param("documentType", "OTHER"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.fileName").value(name));
+    }
 
     @Test
     void createsMinimalAndFullDocuments() throws Exception {
