@@ -2,6 +2,7 @@ package com.careerops.backend.pkbimport;
 
 import com.careerops.backend.pkbimport.dto.ImportBatchListResponse;
 import com.careerops.backend.pkbimport.dto.ImportBatchResponse;
+import com.careerops.backend.pkbimport.dto.ExtractionResponse;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
@@ -11,9 +12,11 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/career/imports")
 public class ImportBatchController {
     private final ImportBatchService service;
+    private final ImportBatchExtractionService extractionService;
 
-    public ImportBatchController(ImportBatchService service) {
+    public ImportBatchController(ImportBatchService service, ImportBatchExtractionService extractionService) {
         this.service = service;
+        this.extractionService = extractionService;
     }
 
     @PostMapping("/documents/{documentId}/batches")
@@ -36,5 +39,10 @@ public class ImportBatchController {
     @PostMapping("/batches/{id}/complete")
     public ImportBatchResponse complete(@PathVariable Long id) {
         return service.complete(id);
+    }
+
+    @PostMapping("/batches/{id}/extract")
+    public ExtractionResponse extract(@PathVariable Long id) {
+        return extractionService.extract(id);
     }
 }

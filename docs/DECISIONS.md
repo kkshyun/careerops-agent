@@ -1497,3 +1497,136 @@ production dependency 도입), (2) 업로드된 원본 파일(binary)을 서버�
 object storage 도입을 별도 Task/ADR로 다시 판단한다. 지금은
 `SourceDocument.rawText`가 업로드된 문서의 유일하게 보존되는 표현이므로,
 파싱 과정에서 유실된 정보(이미지, 레이아웃, 서식)는 복구할 수 없다.
+
+---
+
+## ADR-0024: PKB LLM 구조화 추출 — Anthropic 공식 Java SDK 직접 의존,
+## 재실행 batch당 1회, candidate 생성 all-or-nothing
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: PKB-008
+
+**문제**: ADR-0021이 명시적으로 배제하고 PKB-007이 다시 후보로 남긴
+"`SourceDocument.rawText` → LLM 구조화 추출 → `ImportCandidate` 자동
+생성"을 PKB-008에서 구현해야 한다. 이 프로젝트가 처음으로 도입하는
+"제품 런타임이 직접 호출하는 유료 외부 AI provider"라, provider 선택/
+SDK 방식/재실행 정책/candidate 생성 원자성 4가지를 함께 결정해야 했다.
+
+**결정**:
+
+1. **AI provider는 Anthropic(Claude)을 사용한다.** OpenAI도 structured
+   output(JSON schema, constrained decoding)을 대등하게 지원하지만,
+   Claude Platform의 structured output이 공식 문서상 명시적으로 GA임을
+   확인했고([Structured outputs — Claude Platform
+   Docs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)),
+   이 프로젝트가 devtool로 이미 Anthropic 생태계를 사용 중이라는 정성적
+   근거를 더해 사용자가 최종 선택했다. **애플리케이션 런타임의 API
+   key는 로컬 Claude Code/Codex CLI 로그인과 완전히 별개로 발급한다**
+   (하나를 다른 하나의 credential로 재사용하지 않는다).
+2. **공식 Java SDK(`com.anthropic:anthropic-java`)를 직접 의존성으로
+   추가한다.** ALIO 선례(ADR-0007)처럼 `RestClient` 직접 호출도
+   검토했으나 기각 — JSON schema 요청 구성/retry/timeout을 직접
+   구현해야 하고, ALIO 클라이언트에는 애초에 명시적 timeout이 전혀
+   없다는 사실이 확인되어(나쁜 선례) 그대로 복제할 수 없다. Spring AI
+   같은 멀티 provider abstraction framework는 provider 1개·use case
+   1개뿐인 이번 규모에 비례하지 않아 기각한다.
+3. **`DocumentExtractionClient` 최소 abstraction 하나만 둔다**
+   (`extract(rawText, documentType) -> StructuredExtractionResult`).
+   구현체는 `AnthropicDocumentExtractionClient` 하나뿐이고, provider
+   registry/factory는 만들지 않는다. 테스트는 이 인터페이스의 fake
+   구현체를 주입한다(실제 API 호출 없음).
+4. **structured output schema는 새 DTO를 만들지 않고 기존
+   `CareerExperienceCreateRequest`/`CertificationCreateRequest`/
+   `EducationCreateRequest`/`AwardCreateRequest`를 그대로 리스트
+   원소로 감싸는 `StructuredExtractionResult` 하나만 신설한다.** LLM
+   편의를 위한 새 사실 필드는 추가하지 않는다.
+5. **추출 실행은 `ImportBatch` 단위로, batch당 1회만 허용한다.**
+   `import_batches`에 nullable `extracted_at`(성공 커밋 시에만 설정)을
+   추가해 이미 값이 있으면 재호출 시 409. 재시도가 필요하면 같은
+   `SourceDocument`로 새 `ImportBatch`를 만든다 — ADR-0021이 이미 정한
+   "같은 문서를 다시 분석하려면 새 `ImportBatch`" 설계를 그대로
+   확장한 것으로, 새 개념을 도입하지 않는다. `ImportBatch.status`
+   (`OPEN`/`COMPLETED`)에는 손대지 않는다 — review lifecycle과
+   execution 사실을 한 enum에 섞지 않는다. `COMPLETED` batch에는
+   extraction을 허용하지 않는다(ADR-0022의 "COMPLETED에는 아무것도
+   추가할 수 없다" 불변식과 동일선상).
+6. **한 번의 extraction에서 나온 candidate 전체를 단일 트랜잭션으로
+   all-or-nothing 생성한다.** 하나라도 business validation(`@Valid`
+   재검증, `ImportCandidateService.parseAndValidate()`)에 실패하면
+   전체를 롤백하고 candidate 0개 + 400을 반환한다. partial success(유효한
+   항목만 저장)는 채택하지 않는다 — 개인 PKB의 정확성/투명성이
+   핵심 제약인 이 기능에서 "왜 일부만 후보로 보이는지"를 사용자가 추론해야
+   하는 조용한 정보 손실을 피한다. 이 정책은 추가 구현 비용 없이
+   달성된다: `ImportCandidateService.create()`가 이미 `@Transactional`이고
+   내부 `findByIdForUpdate()` row lock이 같은 트랜잭션 내 재진입
+   가능하므로, 새 orchestration 서비스가 이를 순차 반복 호출하기만
+   해도 예외 발생 시 트랜잭션 전체가 자연히 롤백된다. `repository.save()`를
+   직접 호출하지 않고 기존 `ImportCandidateService`를 그대로 재사용한다
+   (리팩터링 불필요).
+7. **LLM 호출 실패 시 재시도는 SDK 기본 내장 retry(429/5xx/네트워크
+   timeout 한정, 소수 횟수)를 그대로 사용한다.** 커스텀 backoff/DLQ는
+   만들지 않는다. connect timeout 10초, read/request timeout 60초를
+   명시적으로 설정한다(무한 대기 금지).
+8. **raw LLM request/response는 DB에 저장하지 않는다.** 최종 구조화
+   결과는 이미 `ImportCandidate.payload`로 보존되어 추적 가능하고,
+   원문 재포함 위험(privacy)과 미확인 미래 요구(디버깅용 보관)를 위해
+   지금 인프라를 만들지 않는다는 ADR-0023과 동일한 원칙을 적용한다.
+   대신 `import_batches`에 nullable `extraction_provider`/
+   `extraction_model`/`extraction_prompt_version`(문자열) 3개 컬럼만
+   추가해 향후 재추출/문제 결과 추적의 최소 단서로 남긴다.
+9. **API key 환경변수명은 `CAREEROPS_ANTHROPIC_API_KEY`로 provider를
+   명시한다.** 기존 `.env`/`spring.config.import` 로딩 경로를 그대로
+   따르되(ADR-0012), provider SDK의 `.fromEnv()`(OS 환경변수 직접
+   읽기)는 `.env`가 Spring `PropertySource`일 뿐 OS 환경변수가 아니므로
+   사용하지 않는다 — 기존 ALIO 패턴(`@Value` 생성자 주입 후 SDK 빌더에
+   명시 전달)을 그대로 따른다.
+
+**대안**:
+- **OpenAI API 채택** — 기각(사용자 선택). 기능적으로 대등하나 GA 라벨이
+  Anthropic만큼 명시적이지 않고, devtool 생태계 중복 이점이 없다.
+- **`ImportBatchStatus`에 `EXTRACTING`/`EXTRACTION_FAILED` 상태 추가** —
+  기각. review 상태와 execution 상태를 한 축에 섞는 것이고, 이번 MVP는
+  단일 동기 HTTP 요청 안에서 끝나 백그라운드 잡/큐가 없어 "진행중" 상태를
+  영속화할 이유가 없다.
+- **재실행 시 기존 PENDING candidate 존재 여부로 차단(옵션 B)/서버가
+  자동으로 새 batch 생성(옵션 C)/별도 `ExtractionRun` entity(옵션 D)** —
+  모두 기각. B는 전부 승인/거부된 뒤 재호출이 다시 가능해지는 이유가
+  불명확하고, C는 "batch에 대해 실행한다"는 기존 API 계약과 어긋나며,
+  D는 이번 규모에 과한 audit 구조다.
+- **partial success(유효 candidate만 저장)** — 기각. 조용한 정보 손실
+  위험이 이 기능의 핵심 제약(정확성)과 상충하고, all-or-nothing이
+  기존 `ImportCandidateService`의 트랜잭션 경계를 그대로 재사용하는 것만으로
+  공짜로 달성돼 추가 구현 비용도 없다.
+- **retry 완전 비활성화(`maxRetries(0)`)** — 검토했으나 기각(사용자 선택).
+  SDK가 이미 검증된 최소 재시도(400/인증 실패/스키마 invalid는 대상 아님)를
+  제공해, 이를 그대로 쓰는 것이 "무조건적 retry를 새로 만들지 않는다"는
+  원칙에 가장 부합한다.
+- **raw LLM response를 DB에 저장** — 기각. 디버깅 효용은 상세 로그
+  레벨(민감정보 제외, 메타데이터만)로 대체 가능하고, 저장하려면 보관
+  기간/접근 제어까지 새로 설계해야 하는데 아직 그 요구가 없다(ADR-0023과
+  동일 판단 근거).
+- **`chunking`(문서를 여러 조각으로 나눠 각각 추출 후 병합)** — 기각(이번
+  MVP). `rawText` 상한 50,000자는 선택한 모델의 context window(128K~1M
+  토큰) 대비 일부만 사용하는 규모로 확인됐고, 목적이 "요약"이 아니라
+  "사실 추출"이라 chunk 경계에서 관련 사실이 서로 다른 조각으로 갈라져
+  부정확해질 위험이 오히려 커진다. Map-Reduce 구조는 도입하지 않는다.
+
+**이유**: ADR-0021이 미리 설계해둔 3계층 provenance + 승인 게이트가
+LLM 추출 경로에도 리팩터링 없이 그대로 들어맞는다는 것이 이번 조사로
+확인됐다 — "LLM이 만든 candidate가 검토 없이 PKB에 반영되는 경로"는
+설계상 존재하지 않는다(수동 생성이든 LLM 생성이든 `approve()`까지
+완전히 동일한 코드 경로). 나머지 결정들(재실행 1회/all-or-nothing/SDK
+기본 retry)은 모두 "이 프로젝트 규모에 비례하는 최소 방어 + 기존 구조/
+DB 기본 원자성을 최대한 재사용, 별도 상태 머신/audit framework 도입
+없음"이라는 기존 컨벤션(ADR-0011/0015/0016/0019/0022/0023)을 그대로
+따른다.
+
+**영향**: 이 프로젝트 최초로 런타임에 유료 외부 AI provider를 호출한다
+— provider 콘솔에서 사용량/비용 알림을 걸어두는 것을 권장한다(코드
+범위 밖). prompt/schema 기반 hallucination 방어는 위험을 줄일 뿐
+제거하지 못하므로, 사람의 최종 승인이 여전히 유일한 진짜 안전판이라는
+점을 Task 명세와 향후 UX 안내에 계속 명시해야 한다. 향후 다른 provider로
+교체하거나 멀티 provider를 지원해야 하는 시점이 오면 이번 최소
+abstraction(`DocumentExtractionClient`)을 그대로 확장하되, 지금은 그
+필요가 없다.

@@ -284,7 +284,7 @@ JobPosting 매칭이 사용할 수 있는 안정적인 structured PKB schema를
 했지만 Claude가 로컬에서 매 단계 재실행해 최종 125/125 전체 통과를
 확인했다. 3개 Task 전부 1차 리뷰에서 바로 PASS(수정 요청 없음).
 
-## Phase 13 — PKB 문서 Import 파이프라인 (진행중, PKB-007까지 완료)
+## Phase 13 — PKB 문서 Import 파이프라인 (완료)
 
 목표: 이력서/포트폴리오/경험정리 등 기존 문서를 PKB로 가져오기 위한
 import 기반을 만든다. 핵심 제약(AGENTS.md)은 "AI/사람이 만든 후보를
@@ -373,13 +373,62 @@ Phase에서 다루지 않는다.
       재실행)만에 리뷰 1 round(1차 PASS) 통과, 173/173 테스트 통과(기존
       159 + 신규 14)(`.ai/tasks/PKB-007.md`,
       `.ai/reviews/PKB-007-review-1.md`, ADR-0023).
+- [x] PKB-008 — `SourceDocument.rawText` → LLM(Anthropic Claude, 공식
+      Java SDK `com.anthropic:anthropic-java:2.54.0`) 구조화 추출 →
+      `ImportCandidate`(PENDING) 자동 생성. `POST
+      /api/career/imports/batches/{id}/extract` 신설. 새 DTO를 만들지
+      않고 기존 `*CreateRequest` record를 그대로 리스트 원소로 감싼
+      `StructuredExtractionResult`를 `outputConfig(Class)` 자동 schema
+      유도로 요청(수동 raw JSON Schema 불필요). all-or-nothing
+      candidate 생성은 `ImportCandidateService.create()`를 전혀 수정하지
+      않고 같은 `@Transactional` 안에서 반복 호출하는 것만으로 달성
+      (row lock 재진입 + 예외 시 자동 롤백). 재실행은 batch당 1회만
+      허용(`import_batches.extracted_at`은 성공 커밋 시에만 설정, 이미
+      설정된 batch·`COMPLETED` batch는 409). Prompt는 `<document>` 태그로
+      원문(DATA)과 지시를 분리해 prompt injection을 방어하고, "원문 명시
+      사실만/추론 금지/알 수 없으면 null/날짜 추측 금지" 원칙을 명시.
+      `PlaceholderValueSanitizer`가 "현재"/"미상"/"N/A" 등을 null로
+      정규화한 뒤 기존 Bean Validation 경로를 그대로 통과시킨다(검증
+      책임 이원화 없음). API key는 `.env`(PropertySource일 뿐 OS
+      환경변수가 아님)와 SDK `.fromEnv()`의 불일치 함정을 피해
+      `@Value` 주입 후 SDK 빌더에 명시 전달, 변수명은
+      `CAREEROPS_ANTHROPIC_API_KEY`. connect 10초/request 60초 명시
+      timeout, retry는 SDK 기본값 그대로(커스텀 재시도 없음). raw LLM
+      request/response는 DB/로그 어디에도 저장하지 않는다(최종 구조화
+      결과만 `ImportCandidate.payload`로 보존). 신규 migration
+      `V15__add_import_batch_extraction_metadata.sql`(`extracted_at`/
+      `extraction_provider`/`extraction_model`/`extraction_prompt_version`
+      nullable 4컬럼만 추가, 신규 테이블 없음). 구현 중 Codex sandbox의
+      네트워크 차단으로 SDK 버전/API를 스스로 확인할 수 없어 명시적으로
+      멈췄고(blocker 1건), Claude가 공식 Maven Central/GitHub/구조화
+      출력 문서를 직접 조회해 전달 → 이후 로컬 재실행에서 드러난
+      존재하지 않는 SDK 메서드 호출(`connectTimeout(Duration)`, 로컬
+      gradle 캐시 jar를 `javap`으로 디컴파일해 실제 API로 수정)과 테스트
+      코드의 Mockito `when().thenThrow()` 연속 재스터빙 버그(Claude가
+      격리 진단 테스트로 근본 원인을 직접 재현, `doThrow().when()`으로
+      수정)를 각각 한 차례씩 같은 thread에 되돌려 반영(revision 2건)한
+      끝에 리뷰 1 round(1차 PASS) 통과, 185/185 테스트 통과(기존
+      173 + 신규 12)(`.ai/tasks/PKB-008.md`, `.ai/reviews/PKB-008-review-1.md`,
+      ADR-0024). 기존 `ImportCandidateConcurrencyTest`의 동시성 테스트
+      1건이 간헐적으로 실패하는 현상을 발견했으나 `git stash`로 이번
+      변경분을 제거한 clean main HEAD에서도 동일 재현되어 PKB-006부터
+      있던 기존 결함으로 판정(이번 Task 범위 밖, 별도 후속 조치 필요).
 
 ### Phase 13 이후 후보
 
-- **PKB-008** — LLM 기반 구조화 추출(`SourceDocument.rawText` →
-  `ImportCandidate` 자동 생성). AI provider 선택/structured output/
-  schema validation/parse failure handling/할루시네이션 방지가 필요해
-  별도 Task/ADR로 분리.
+- **`MATCH-001`(가칭) — `JobPosting` ↔ PKB 적합도 매칭** — PKB-008까지
+  완료되어 문서 기반/수동 PKB가 모두 구조화된 상태로 쌓이기 시작했다.
+  AGENTS.md가 정의한 제품 목표("지원자의 이력에 맞는 적합도를 판단해
+  카카오톡으로 알림")의 다음 단계. embedding/pgvector/RAG 도입 여부부터
+  먼저 조사·결정해야 한다(PKB-008에서 의도적으로 범위 밖으로 미뤄둔
+  영역). 아직 착수 전, 우선순위는 사용자 승인 필요.
+- **`ImportCandidateConcurrencyTest.concurrentCompleteAndCreatePreserveBatchInvariant()`
+  간헐적 실패** — PKB-008 구현 중 로컬 전체 테스트에서 발견. `git stash`로
+  PKB-008 변경분을 전부 제거한 clean main HEAD(PKB-007 완료 시점)에서도
+  동일하게 재현되어, PKB-006(`ImportBatchService.complete()`/
+  `ImportCandidateService.create()`의 동시성 처리, ADR-0022)부터 있던
+  기존 결함으로 확인됐다 — PKB-008과 무관. 원인 조사 및 수정은 별도
+  Task로 분리한다.
 
 ### Phase 7 이후 후보
 

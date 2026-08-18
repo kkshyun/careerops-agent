@@ -1,14 +1,22 @@
 package com.careerops.backend.pkbimport;
 
+import com.careerops.backend.career.dto.AwardCreateRequest;
+import com.careerops.backend.pkbimport.extraction.llm.DocumentExtractionClient;
+import com.careerops.backend.pkbimport.extraction.llm.LlmExtractionException;
+import com.careerops.backend.pkbimport.extraction.llm.StructuredExtractionResult;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.annotation.Rollback;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -24,6 +32,7 @@ class ImportBatchControllerTest {
     @Autowired SourceDocumentRepository sourceDocumentRepository;
     @Autowired ImportBatchRepository repository;
     @Autowired ImportCandidateRepository candidateRepository;
+    @MockitoBean DocumentExtractionClient extractionClient;
 
     @Test
     void createsOpenBatchForExistingDocument() throws Exception {
@@ -96,6 +105,50 @@ class ImportBatchControllerTest {
         mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/complete", batch.getId()))
                 .andExpect(status().isConflict());
         assertThat(repository.findById(batch.getId()).orElseThrow().getStatus()).isEqualTo(ImportBatchStatus.OPEN);
+    }
+
+    @Test
+    void extractionEndpointReturnsStructuredSuccessResponse() throws Exception {
+        ImportBatch batch = repository.saveAndFlush(new ImportBatch(
+                sourceDocumentRepository.save(document("extract")), ImportBatchStatus.OPEN));
+        when(extractionClient.extract(any(), any())).thenReturn(new StructuredExtractionResult(
+                java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                java.util.List.of(new AwardCreateRequest("award", null, null, null))));
+
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/extract", batch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.batchId").value(batch.getId()))
+                .andExpect(jsonPath("$.createdCandidateCount").value(1))
+                .andExpect(jsonPath("$.counts.AWARD").value(1))
+                .andExpect(jsonPath("$.counts.CAREER_EXPERIENCE").value(0))
+                .andExpect(jsonPath("$.candidateIds.length()").value(1));
+    }
+
+    @Test
+    void extractionEndpointMapsNotFoundConflictBadRequestAndProviderFailure() throws Exception {
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/extract", Long.MAX_VALUE))
+                .andExpect(status().isNotFound());
+
+        ImportBatch malformed = repository.saveAndFlush(new ImportBatch(
+                sourceDocumentRepository.save(document("malformed")), ImportBatchStatus.OPEN));
+        doThrow(new LlmExtractionException(LlmExtractionException.Reason.MALFORMED_RESPONSE))
+                .when(extractionClient).extract(any(), any());
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/extract", malformed.getId()))
+                .andExpect(status().isBadRequest());
+
+        ImportBatch unavailable = repository.saveAndFlush(new ImportBatch(
+                sourceDocumentRepository.save(document("unavailable")), ImportBatchStatus.OPEN));
+        doThrow(new LlmExtractionException(LlmExtractionException.Reason.PROVIDER_RETRY_EXHAUSTED))
+                .when(extractionClient).extract(any(), any());
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/extract", unavailable.getId()))
+                .andExpect(status().isServiceUnavailable());
+
+        ImportBatch completed = repository.saveAndFlush(new ImportBatch(
+                sourceDocumentRepository.save(document("closed")), ImportBatchStatus.OPEN));
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/complete", completed.getId()))
+                .andExpect(status().isOk());
+        mockMvc.perform(post(IMPORTS_URL + "/batches/{id}/extract", completed.getId()))
+                .andExpect(status().isConflict());
     }
 
     private SourceDocument document(String fileName) {

@@ -25,6 +25,17 @@ public class ImportBatch {
 
     private Instant completedAt;
 
+    private Instant extractedAt;
+
+    @Column(length = 50)
+    private String extractionProvider;
+
+    @Column(length = 100)
+    private String extractionModel;
+
+    @Column(length = 50)
+    private String extractionPromptVersion;
+
     protected ImportBatch() {}
 
     public ImportBatch(SourceDocument sourceDocument, ImportBatchStatus status) {
@@ -37,4 +48,15 @@ public class ImportBatch {
     public ImportBatchStatus getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getCompletedAt() { return completedAt; }
+    public Instant getExtractedAt() { return extractedAt; }
+    public String getExtractionProvider() { return extractionProvider; }
+    public String getExtractionModel() { return extractionModel; }
+    public String getExtractionPromptVersion() { return extractionPromptVersion; }
+
+    public void markExtracted(String provider, String model, String promptVersion) {
+        this.extractedAt = Instant.now();
+        this.extractionProvider = provider;
+        this.extractionModel = model;
+        this.extractionPromptVersion = promptVersion;
+    }
 }
