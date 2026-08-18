@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-**Phase 8 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
+**Phase 9 완료.** CORE-001(백엔드 실행 기반: Spring Boot + PostgreSQL/
 Redis + Actuator)이 완료됐다. JOB-001부터 첫 도메인(Job Posting) 코드가
 추가되며, 이때부터 `com.careerops.backend.<도메인>` 형태의 기능 단위
 (feature-package) 구조를 쓴다(`domain/service/repository/controller` 같은
@@ -190,6 +190,37 @@ Task 후보로 남겼다. JOB-003은 COLLECT-004부터 저장만 되고 조회 A
 고정했다. `GET /api/jobs` 목록 응답은 payload 비대화를 막기 위해 그대로
 두었고, `JobPostingService.findById()`를 확장하는 3-query 구조만으로
 새 Query Service 계층 없이 구현했다(migration/metric 신규 추가 없음).
+APPLICATION-001은 첫 지원 관리 도메인(Job Application)을 신설했다 —
+`com.careerops.backend.application` 패키지에 `JobApplication`(`job`
+패키지의 `RecruitmentStep`과 동일한 `@ManyToOne(optional=false,
+fetch=LAZY) @JoinColumn` FK 패턴으로 `JobPosting`을 참조, raw Long
+컬럼 아님)과 `ApplicationStatus` enum(`INTERESTED`/`PLANNED`/
+`SUBMITTED`/`OFFERED`/`REJECTED`/`WITHDRAWN` 6값)을 추가했다. `status`는
+"지원이 전체적으로 어느 국면인가"라는 요약값 역할만 하고, 서류/필기/면접
+같은 전형 단계는 상태에 넣지 않고 향후 `ApplicationStage`(APPLICATION-002
+후보)로 역할을 분리해뒀다(ADR-0016). `JobPosting.status`가 외부(ALIO)
+원본 값을 그대로 담는 `String`인 것과 달리, `JobApplication.status`는
+전적으로 내부 통제 어휘라 실제 Java enum(`@Enumerated(EnumType.STRING)`)을
+썼다 — 두 필드가 겉보기엔 비슷해도 표현 방식을 다르게 가져간 것은 의도된
+선택이다. 동일 `JobPosting`에 대한 중복 `JobApplication` 등록은
+COLLECT-006(`createOrGetExisting()`)의 idempotent 흡수 패턴을 그대로
+따르지 않고 **409 Conflict로 명시 거부**한다(애플리케이션 사전
+`existsByJobPostingId` 체크 + DB `UNIQUE(job_posting_id)` 위반 catch
+이중 방어) — COLLECT-006의 중복은 시스템(수집기) 동시 실행이 만든 데이터
+아티팩트라 조용히 정리하는 게 맞았지만, 이번엔 사용자가 직접 트리거하는
+명시적 액션이라 실패로 신호를 주는 쪽을 택했다(ADR-0016). `GET
+/api/applications`(status 필터 + pagination)와 단건 조회 모두 JPQL
+constructor expression으로 `JobPosting`과 JOIN해 응답 DTO를 단일 쿼리로
+직접 조립한다(JOB-003과 동일한 N+1 방지 원칙). `PATCH
+/api/applications/{id}`는 부분 수정만 지원하고(요청 필드가 없거나 null이면
+무변경), `appliedAt`은 status 전이에 따라 자동 설정되지 않으며 항상
+명시적 입력만 반영한다. `job_posting_id` FK에는 `ON DELETE` 절도
+`CascadeType.ALL`도 넣지 않아(V3의 `recruitment_steps`/`attachments`
+컨벤션 재사용) `JobPosting`이 삭제돼도 사용자의 지원 이력이 조용히
+함께 사라지지 않게 방어했다(현재 `JobPosting` 삭제 API 자체는 없음).
+`JobPostingService`와 동일하게 `@Transactional`은 쓰지 않았다(ADR-0015와
+같은 근거). 신규 migration `V5__create_job_applications_table.sql`,
+신규 metric은 없음(일반 CRUD라 기존 Spring HTTP metric으로 충분).
 나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
 [ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
 

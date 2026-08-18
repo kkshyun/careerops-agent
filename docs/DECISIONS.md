@@ -894,3 +894,93 @@ HTTP 409를 반환할 수 있다(신규 API 계약, 기존 200/400/502는 변경
 `AlioDetailEnrichmentService`의 동시성 취약점은 데이터 손상 위험 없이
 남아 있으며, 트랜잭션 재구조화가 필요한 후속 Task로 `docs/ROADMAP.md`에
 기록한다.
+
+---
+
+## ADR-0016: `JobApplication` 도메인 — status를 실제 Java enum으로,
+## 중복 등록은 idempotent 흡수 대신 409 Conflict로 거부
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: APPLICATION-001
+
+**문제 1 — `status` 표현**: `JobPosting.status`는 지금까지 plain `String`으로
+ALIO 원본 값을 그대로 저장해왔다(`"OPEN"`/`"CLOSED"` 등, 외부 API가 실제로
+주는 값을 신뢰). `JobApplication.status`도 같은 컨벤션을 그대로 따를지,
+아니면 다른 표현을 쓸지 정해야 했다.
+
+**결정 1**: `JobApplication.status`는 `String`이 아니라 실제 Java
+`enum ApplicationStatus`(`@Enumerated(EnumType.STRING)`)로 만든다. 값은
+`INTERESTED`/`PLANNED`/`SUBMITTED`/`OFFERED`/`REJECTED`/`WITHDRAWN` 6개로
+최소화한다. `IN_PROGRESS`(의미가 모호하고 향후 확장과 겹침), `DOCUMENT`/
+`WRITTEN`/`INTERVIEW`(지원 상태가 아니라 전형 단계)는 포함하지 않는다 —
+`status`는 "이 지원이 전체적으로 어느 국면인가"라는 요약값 역할만 하고,
+전형 단계별 일정/결과(서류/필기/면접 각각의 `scheduledAt`/`result`)는
+향후 APPLICATION-002의 별도 `ApplicationStage` 모델이 담당하도록 역할을
+분리해둔다.
+
+**대안**: `JobPosting.status`와 동일하게 plain `String` — 기각.
+`JobPosting.status`가 `String`인 이유는 "외부(ALIO) 원본 값을 그대로
+반영해야 하는 신뢰 경계"이기 때문이지, 이 프로젝트의 일반 컨벤션이
+아니다. `JobApplication.status`는 전적으로 내부 통제 어휘라 이 근거가
+적용되지 않는다 — 오히려 enum을 쓰면 컴파일 타임 안정성과 잘못된 값의
+자동 400 처리(Jackson deserialization 실패)를 얻을 수 있어 String을
+고수할 이유가 없다.
+
+---
+
+**문제 2 — 동일 `JobPosting`에 대한 중복 `JobApplication` 등록**: 사용자가
+같은 공고를 실수로(또는 의도적으로) 두 번 "지원 관리에 추가"하려는 요청을
+어떻게 처리할지 정해야 했다. COLLECT-006(ADR-0015)에는 이미 비슷한 상황
+— 동일 `(source, external_id)` 중복 저장 시도 — 에 대한 선례
+(`JobPostingService.createOrGetExisting()`, 예외 catch 후 기존 row로
+조용히 합류, idempotent)가 있었다.
+
+**결정 2**: `JobApplication` 생성은 **COLLECT-006 선례를 그대로 따르지
+않는다.** 대신 애플리케이션 사전 체크(`existsByJobPostingId`)와 DB
+`UNIQUE(job_posting_id)` 제약 위반(`DataIntegrityViolationException`)
+둘 다에서 **기존 row를 반환하지 않고 HTTP 409 Conflict로 명시적으로
+거부**한다.
+
+**대안**: `createOrGetExisting()`과 동일하게 200 + 기존 row 반환(idempotent)
+— 기각(사용자 선택). COLLECT-006의 중복은 **시스템(ALIO 수집기)이 동시
+실행되며 만든 데이터 레벨 아티팩트**라 사용자가 인지할 필요 없이 조용히
+정리되는 것이 맞았다. `JobApplication` 생성은 **사용자가 직접 트리거하는
+명시적 액션**(예: "지원 관리에 추가" 버튼)이라 성격이 다르다 — 두 번째
+시도가 "이미 등록돼 있다"는 사실 자체가 사용자에게 유의미한 정보이고,
+이를 성공(200)으로 숨기면 클라이언트/사용자가 자신의 실수(중복 클릭 등)를
+인지할 기회를 잃는다. COLLECT-006의 수동 수집 API가 락 경합 시 409를
+반환하는 기존 컨벤션과도 일관된다.
+
+---
+
+**문제 3 — FK cascade**: `job_applications.job_posting_id`가 삭제되는
+`JobPosting`을 어떻게 처리할지(`ON DELETE CASCADE`/`RESTRICT`/미지정)
+정해야 했다. 현재 `JobPosting` 삭제 API 자체가 없어 당장 실행 경로는
+없지만, migration/entity 설계 시점에 결정해두지 않으면 향후 삭제 API가
+추가될 때 조용히 잘못된 기본값(무제약 CASCADE 등)이 들어갈 위험이 있다.
+
+**결정 3**: `job_posting_id` FK에 `ON DELETE` 절을 넣지 않는다(Postgres
+기본 `NO ACTION` — 자식 row가 있으면 부모 삭제가 거부됨). Entity에도
+`CascadeType.ALL` 등을 붙이지 않는다. `recruitment_steps`/`attachments`
+(V3, COLLECT-004)가 이미 같은 방식으로 `JobPosting` FK를 다루고 있어
+컨벤션을 그대로 재사용한다.
+
+**대안**: `ON DELETE CASCADE` — 기각. `JobPosting`을 지우면 사용자의
+지원 이력(`status`/`memo`/`appliedAt`)이 조용히 함께 사라지는 것은
+"AI가 사용자 데이터를 임의로 손실시키지 않는다"는 프로젝트 원칙과
+충돌한다. 향후 `JobPosting` 삭제 API가 필요해지면, 연결된
+`JobApplication`이 있는 경우 어떻게 할지(삭제 차단/사용자에게 명시적
+확인/soft delete 등)를 그 Task에서 별도로 설계해야 한다 — 지금 결정은
+"기본값으로 사용자 데이터를 잃지 않는다"는 것뿐이다.
+
+**이유(종합)**: 세 결정 모두 "기존 선례를 무비판적으로 복제하지 않고,
+지금 다루는 데이터/액션의 실제 성격(외부 신뢰 경계 vs 내부 통제 어휘,
+시스템 자동 프로세스 vs 사용자 명시적 액션, 수집 데이터 vs 사용자 소유
+기록)에 맞춰 판단한다"는 같은 원칙에서 나왔다.
+
+**영향**: `POST /api/applications`는 `POST /api/jobs`나
+`JobPostingService.createOrGetExisting()`과 달리 중복 시 항상 409를
+반환하는 새로운 API 계약이 생긴다. `ApplicationStatus`에 새 값이
+필요해지면(예: APPLICATION-002 확장) 이 ADR의 "역할 분리" 원칙을 먼저
+재확인해야 한다 — 전형 단계 정보를 `status`에 다시 밀어넣지 않는다.

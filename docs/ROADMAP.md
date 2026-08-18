@@ -148,6 +148,37 @@ Scheduler/enrichment)는 이번 Phase에서 전혀 손대지 않는다.
       ALIO 공고(id=182)로 정렬/필드노출범위 수동 검증 완료
       (`.ai/tasks/JOB-003.md`).
 
+## Phase 9 — JobApplication 핵심 도메인(지원 관리 CRUD/상태 관리) (완료)
+
+목표: 사용자가 관심 있는 채용공고를 자신의 지원 대상으로 등록하고, 현재
+지원 상태와 기본 지원 정보(메모)를 관리할 수 있게 한다. 단일 사용자 MVP라
+User/Auth 도메인은 추가하지 않고, 전형 단계별 일정/결과(`ApplicationStage`),
+알림, Calendar, 자기소개서 등은 이번 Phase에서 다루지 않는다. 수집
+인프라(ALIO 연동/Scheduler)는 손대지 않음.
+
+- [x] APPLICATION-001 — 신규 `com.careerops.backend.application` 패키지에
+      `JobApplication`(`JobPosting` 1:0..1, `RecruitmentStep`과 동일한
+      `@ManyToOne(optional=false, fetch=LAZY)` FK 패턴) + `ApplicationStatus`
+      enum(`INTERESTED`/`PLANNED`/`SUBMITTED`/`OFFERED`/`REJECTED`/
+      `WITHDRAWN` 6값 — 서류/필기/면접 전형 단계는 상태에 넣지 않고 향후
+      APPLICATION-002의 `ApplicationStage`로 역할 분리, ADR-0016) 신설.
+      `POST/GET/GET{id}/PATCH/DELETE /api/applications` 5개 엔드포인트,
+      동일 `jobPostingId` 중복 등록은 사전 체크 + DB
+      `UNIQUE(job_posting_id)` 이중 방어로 **409 Conflict**(COLLECT-006의
+      idempotent 흡수 패턴과 달리 사용자 명시적 액션이라 실패로 처리,
+      ADR-0016). 목록/단건 조회는 JPQL constructor expression으로
+      `JobPosting`과 JOIN해 `JobApplicationResponse`(companyName/title/
+      applicationEndAt/jobPostingStatus snapshot 포함)를 단일 쿼리로 조립
+      (N+1 없음, JOB-003 원칙 재사용). PATCH는 부분 수정(요청 필드 null=
+      무변경), `appliedAt` 자동 설정 없음(명시적 입력만). `job_posting_id`
+      FK는 `ON DELETE` 절 없이 V3 컨벤션 재사용(`CascadeType.ALL` 미사용).
+      `@Transactional` 미사용(ADR-0015와 동일 근거). 신규 migration
+      `V5__create_job_applications_table.sql`, 신규 metric 없음(일반
+      CRUD, 기존 Spring HTTP metric으로 충분). 구현 2 round(1차 최초 구현,
+      2차는 테스트 코드 Java text block 컴파일 오류 수정) + 리뷰 1
+      round(1차 통과) 거쳐 80/80 테스트 통과(기존 66 + 신규 14)
+      (`.ai/tasks/APPLICATION-001.md`).
+
 ### Phase 7 이후 후보
 
 - **`AlioDetailEnrichmentService` 트랜잭션 재구조화(동시성 강화)** — 같은
@@ -160,6 +191,13 @@ Scheduler/enrichment)는 이번 Phase에서 전혀 손대지 않는다.
   catch-and-continue가 불가능해 "작은 수정"으로 끝나지 않는다(COLLECT-006/
   ADR-0015). COLLECT-006의 run-level lock이 이 race의 발생 창을 사실상
   닫아 우선순위가 낮아졌지만, 완전히 해소된 것은 아니다.
+
+### Phase 9 이후 후보
+
+- **APPLICATION-002 — 전형 단계(`ApplicationStage`) 관리** — `JobApplication`
+  1건당 서류/필기/면접/최종 등 여러 전형 단계와 각각의 `scheduledAt`/
+  `result`/`memo`를 관리(ADR-0016에서 역할 분리를 미리 설계해둠). 사용자
+  승인 후 착수.
 
 ### Phase 6 이후 후보
 
