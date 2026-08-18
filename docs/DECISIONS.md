@@ -1036,3 +1036,98 @@ CASCADE`**를 사용한다. `JobApplication`을 삭제하면 그 안의 모든
 로직을 작성할 필요가 없다. 향후 `ApplicationStage`가 다른 도메인(예:
 Calendar 이벤트)의 참조 대상이 되면, 그 시점에 이 CASCADE가 그 도메인에도
 연쇄적으로 영향을 주는지 재검토해야 한다.
+
+---
+
+## ADR-0018: PKB 데이터 모델 — 범용 `CareerItem` 대신 경험 중심
+## `CareerExperience`(Certification/Education/Award 제외)
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: PKB-001
+
+**문제**: PKB(Personal Knowledge Base) 핵심 도메인을 시작하며, 사용자의
+프로젝트/활동/업무/연구 경험을 저장할 스키마를 두 방식 중 하나로 정해야
+했다 — (A) 자격증/학력/수상까지 포함하는 범용 `CareerItem`(단일 테이블 +
+`type` discriminator) 또는 (B) 서사형 경험(PROJECT/ACTIVITY/WORK/RESEARCH/
+OTHER)만 다루는 `CareerExperience`(자격증/학력/수상은 이번 Phase에 만들지
+않고 필요 시점에 별도 엔티티로 추가). 이번 Phase의 유일한 목표는 "사람이
+입력한 경험 데이터의 안정적 저장/조회"이고, PKB의 다음 소비자는 "공고↔경험
+매칭"과 "자소서 경험 추천"이다.
+
+**결정**: **`CareerExperience`(경험 중심, 좁은 모델)**를 채택한다.
+`ExperienceType` enum은 `PROJECT/ACTIVITY/WORK/RESEARCH/OTHER` 5종만
+갖는다. `Certification`/`Education`/`Award`는 이번 Phase에서 어떤
+테이블/필드도 만들지 않는다.
+
+**대안**:
+- **범용 `CareerItem`**(자격증/학력/수상까지 `type`으로 통합) — 기각. (1)
+  자격증/학력/수상은 evidence(불릿)/skill 태그가 사실상 항상 비어 있는
+  이질적 데이터라 같은 테이블에 밀어 넣으면 검증 로직이 결국 `type`별로
+  갈라진다. (2) 다음 단계인 "공고↔경험 매칭"/"자소서 경험 추천"은 결국
+  서사형 경험만 필요해 `type IN (PROJECT, ACTIVITY, WORK, RESEARCH)` 필터가
+  필요하므로 통합의 이점이 사라진다. (3) 지금 소비자가 없는
+  자격증/학력/수상 스키마(발급기관/자격번호/등급/수상순위 등)를 미리
+  설계하는 것은 "과도한 추상화·불필요한 패턴을 피한다"(AGENTS.md) 원칙과
+  충돌한다.
+
+**이유**: MVP 단순성 우선 + 다음 단계 소비자(매칭/추천)가 실제로 필요로
+하는 데이터 형태에 정확히 맞춘 선택이다. 자격증/학력/수상이 실제로
+필요해지는 시점(적합도 판단/자소서 Phase)에 additive migration으로 별도
+엔티티를 추가하는 비용이, 지금 안 쓰는 필드를 미리 설계/검증하는 비용보다
+작다.
+
+**영향**: 향후 자격증/학력/수상을 PKB에 편입하려면 `CareerExperience`와는
+독립된 새 엔티티(들)를 추가해야 한다 — 기존 `CareerExperience` 스키마
+변경은 필요 없다. 공고 매칭/자소서 추천 설계 시 `CareerExperience`만이
+매칭 대상 데이터임을 전제로 삼는다.
+
+---
+
+## ADR-0019: `CareerExperience` 저장에 이 프로젝트 최초로
+## Service-level `@Transactional` 도입 (ADR-0015 "no @Transactional" 전제의 예외)
+
+- 날짜: 2026-08-18
+- 상태: 확정
+- 관련 Task: PKB-001
+
+**문제**: ADR-0015에서 확인했듯 이 프로젝트는 지금까지
+`@Transactional`을 전혀 쓰지 않았다 — 모든 요청이 "read 여러 번 + 최종
+write 1회"로 끝나, `repository.save()`가 여는 독립적인 짧은 트랜잭션만으로
+충분했다. 그런데 `CareerExperience` 생성/수정은 부모 1행(`career_experiences`)
++ 자식 N행(`experience_bullets`) + 자식 M행(`experience_tags`)을 한 요청
+안에서 함께 쓰는 **진짜 다중-row 원자적 쓰기**다. 이 전제가 처음으로
+깨진다.
+
+**결정**: `CareerExperienceService.create()`/`update()`/`delete()`에
+Service-level `@Transactional`을 적용한다. 부모 저장 + 자식(bullets/tags)
+전체 교체(delete-then-insert)가 하나의 트랜잭션 안에서 원자적으로
+커밋/롤백되도록 한다.
+
+**대안**:
+- **기존처럼 `@Transactional` 없이 각 `save()`를 독립 트랜잭션으로 실행** —
+  기각. 자식 저장 중 하나가 실패(예상치 못한 제약 위반 등)하면 부모만
+  저장되고 자식은 일부만 저장된 깨진 상태가 사용자 눈에 보이지 않게
+  남을 수 있다. 백그라운드 수집기(부분 실패를 다음 스케줄 재시도로 흡수
+  가능, ADR-0011)와 달리, 사용자가 직접 입력하는 CRUD 폼에서는 부분 실패가
+  곧 눈에 보이는 데이터 손상으로 인식된다 — 재시도로 자연 치유되지 않는다.
+- **자식을 별도 API로 분리해 `@Transactional` 자체를 회피**(APPLICATION-002의
+  `ApplicationStage`처럼 부모와 자식을 별개 요청으로 생성) — 기각(설계
+  단계에서 검토, PKB-001/PKB-002 분리 여부로 사용자에게 제시했으나 한
+  Task로 유지하기로 결정). bullets/tags 없는 `CareerExperience`는 "자소서
+  경험 검색"이라는 PKB 이번 Phase의 존재 이유를 사실상 충족하지 못해,
+  분리는 문제를 회피할 뿐 근본적으로 해결하지 않는다고 판단했다.
+
+**이유**: ADR-0015/APPLICATION-002가 유지해온 "read 여러 번 + write
+1회"라는 안전 전제가 이번에는 실제로 성립하지 않으므로, 그 전제 위에서
+유효했던 무-트랜잭션 컨벤션을 기계적으로 재적용하지 않고 실제 쓰기
+패턴에 맞춰 판단했다. `sortOrder`/`UNIQUE` 기반 race 방지(ADR-0015/0016
+계열)와는 별개 문제다 — 이번은 동시성 race가 아니라 단일 요청 내 다중
+row 쓰기의 원자성 문제다.
+
+**영향**: 이 프로젝트에서 `@Transactional`이 등장하는 첫 사례다. 앞으로
+"부모+자식을 한 요청에서 함께 쓰는" 유사한 도메인이 생기면 이 ADR을
+전례로 참고해 `@Transactional` 도입 여부를 판단한다 — 모든 Service에
+기본으로 붙이는 것은 아니며, 여전히 "read만 하거나 단일 write로 끝나는"
+기존 Service(예: `JobApplicationService`, `ApplicationStageService`)는
+무-트랜잭션 컨벤션을 유지한다.

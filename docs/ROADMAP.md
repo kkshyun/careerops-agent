@@ -213,6 +213,30 @@ User/Auth 도메인은 추가하지 않고, 전형 단계별 일정/결과(`Appl
       무변경) + 리뷰 1 round(1차 통과) 거쳐 92/92 테스트 통과(기존 80 +
       신규 12)(`.ai/tasks/APPLICATION-002.md`).
 
+## Phase 11 — Personal Knowledge Base(PKB) 핵심 도메인 (완료)
+
+목표: 사용자의 프로젝트/활동/업무/연구 경험을 채용공고 매칭과 자기소개서
+작성에 재사용할 수 있도록 구조적으로 저장/조회하는 PKB Core를 만든다.
+AI/RAG/embedding/문서 import는 다루지 않는다. 데이터 모델은 범용
+`CareerItem` 대신 경험 중심 `CareerExperience`로 확정(ADR-0018).
+
+- [x] PKB-001 — `CareerExperience`(type: PROJECT/ACTIVITY/WORK/RESEARCH/
+      OTHER) + 자식 `ExperienceBullet`(근거/불릿, STAR 비강제) +
+      `ExperienceTag`(skill/keyword, 대소문자 무시 dedup) 신설.
+      `CREATE/GET(목록,type+keyword filter)/GET{id}/PATCH/DELETE
+      /api/career/experiences`. bullets/tags는 부모와 원자적으로 저장되며
+      PATCH는 이 프로젝트 최초로 List 필드 전체교체 컨벤션(null=무변경,
+      `[]`=전체삭제, `[...]`=전체교체)을 도입했다. 부모+자식 다중 row
+      원자적 쓰기를 위해 이 프로젝트 최초로 Service-level
+      `@Transactional` 도입(ADR-0019). 자식 FK는 `ON DELETE CASCADE`.
+      신규 migration `V7__create_career_experiences_tables.sql`.
+      Certification/Education/Award, source/provenance 추적, 매칭/추천은
+      이번 Phase 범위 밖. 구현 2 round(1차 최초 구현, 2차는 Controller
+      테스트의 Hibernate persistence context 문제 수정 — production 코드
+      무변경, APPLICATION-002와 동일 클래스 버그) + 리뷰 2 round(1차
+      NEEDS_REVISION, 2차 PASS) 거쳐 100/100 테스트 통과
+      (`.ai/tasks/PKB-001.md`).
+
 ### Phase 7 이후 후보
 
 - **`AlioDetailEnrichmentService` 트랜잭션 재구조화(동시성 강화)** — 같은
@@ -250,9 +274,9 @@ User/Auth 도메인은 추가하지 않고, 전형 단계별 일정/결과(`Appl
 - **조회/필터링 API 추가 확장** — `employmentType`/`educationRequirement`/
   게시일 범위 필터, 클라이언트 지정 정렬 등 JOB-002에서 의도적으로 제외한
   항목. 필요성이 실사용에서 확인되면 별도 Task.
-- **cross-source dedup**, **Personal Knowledge Base(PKB) v0**, **Metrics
-  계측 확장**, **알림(카카오톡)** 등 — 아직 착수 전, 우선순위는 사용자
-  승인 후 결정. (Scheduler(정기 수집)는 Phase 4/COLLECT-003으로 완료됨)
+- **cross-source dedup**, **Metrics 계측 확장**, **알림(카카오톡)** 등 —
+  아직 착수 전, 우선순위는 사용자 승인 후 결정. (Scheduler(정기 수집)는
+  Phase 4/COLLECT-003으로 완료됨. PKB는 Phase 11로 착수됨)
 
 이 문서는 Phase가 진행되며 갱신된다. 완료된 Phase는 체크박스로 남기고,
 다음 Phase/후보를 그 아래 갱신한다.
