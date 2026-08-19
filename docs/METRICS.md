@@ -169,6 +169,18 @@ JOB-001/COLLECT-001이 유지해온 "공통 예외 처리 계층을 만들지 �
 반드시 거침)로 강제한 것이며, COLLECT-001의 `careerops_collector_saved_total`과
 동일한 설계 원칙이다.
 
+**JobPosting ↔ PKB Match (MATCH-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_match_request_total` | `careerops.match.request` | Counter | `result`=`success`\|`not_found` | 단일 공고 매칭 요청의 성공/공고 없음 결과 분포 | `JobMatchService.match()` |
+| `careerops_match_duration_seconds` | `careerops.match.duration` | Timer | 없음 | PKB 조회와 deterministic 매칭 계산을 포함한 요청 처리 시간 | `JobMatchService.match()` |
+| `careerops_match_score` | `careerops.match.score` | DistributionSummary | 없음 | 성공한 매칭 요청의 relevance `overallScore` 분포 | `JobMatchService.match()` |
+
+`score`/`jobId`/`companyName`은 태그로 넣지 않는다. 자유값 또는 고유값을
+label로 만들 때 발생하는 높은 cardinality를 피하면서 요청 결과, 지연,
+관련도 분포만 관찰한다.
+
 ### 예정 (미구현, 관련 기능 Task에서 정의)
 
 - 중복 공고 제거율

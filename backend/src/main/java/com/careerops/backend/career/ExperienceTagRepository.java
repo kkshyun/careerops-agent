@@ -5,6 +5,7 @@ import java.util.List;
 
 public interface ExperienceTagRepository extends JpaRepository<ExperienceTag, Long> {
     List<ExperienceTag> findByCareerExperienceIdOrderByIdAsc(Long careerExperienceId);
+    List<ExperienceTag> findByCareerExperienceIdIn(List<Long> careerExperienceIds);
     void deleteByCareerExperienceId(Long careerExperienceId);
     long countByCareerExperienceId(Long careerExperienceId);
 }
