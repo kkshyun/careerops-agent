@@ -177,6 +177,14 @@ JOB-001/COLLECT-001이 유지해온 "공통 예외 처리 계층을 만들지 �
 | `careerops_match_duration_seconds` | `careerops.match.duration` | Timer | 없음 | PKB 조회와 deterministic 매칭 계산을 포함한 요청 처리 시간 | `JobMatchService.match()` |
 | `careerops_match_score` | `careerops.match.score` | DistributionSummary | 없음 | 성공한 매칭 요청의 relevance `overallScore` 분포 | `JobMatchService.match()` |
 
+**JobPosting ↔ PKB Semantic Match (MATCH-002)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_semantic_match_request_total` | `careerops.semantic-match.request` | Counter | `result`=`success`\|`job_not_found`\|`provider_error`\|`validation_failed` | semantic 매칭 요청 결과 분포 | `SemanticJobMatchService.match()` |
+| `careerops_semantic_match_duration_seconds` | `careerops.semantic-match.duration` | Timer | 없음 | LLM 호출을 포함한 semantic 매칭 처리 시간 | `SemanticJobMatchService.match()` |
+| `careerops_semantic_match_score` | `careerops.semantic-match.score` | DistributionSummary | 없음 | 성공 요청의 대표 relevance `semanticScore` 분포 | `SemanticJobMatchService.match()` |
+
 `score`/`jobId`/`companyName`은 태그로 넣지 않는다. 자유값 또는 고유값을
 label로 만들 때 발생하는 높은 cardinality를 피하면서 요청 결과, 지연,
 관련도 분포만 관찰한다.

@@ -1928,3 +1928,137 @@ Task 명세도 확정할 수 없었다. 조사 결과 `JobPosting`에는 사람�
 한국어-영어 교차 매칭 미지원은 다국어 이력서/공고가 늘어나면 실사용
 불편으로 이어질 수 있어, 실제 불편 사례가 관찰되면 최소 대응(예: 자주
 쓰이는 IT 용어 한정 소규모 사전)부터 검토한다.
+
+---
+
+## ADR-0028: `JobPosting` ↔ PKB semantic 매칭(MATCH-002) — Claude
+## structured output, ID 기반 hallucination 검증, MATCH-001과 독립 계산
+
+- 날짜: 2026-08-22
+- 상태: 확정
+- 관련 Task: MATCH-002
+
+**문제**: MATCH-001(ADR-0026) 완료 후 실사용 데이터 재검증(VALIDATE-001)에서
+deterministic 토큰/substring 채점의 구조적 한계가 실측으로 드러났다.
+실제 dev DB PKB(CareerExperience 6/Certification 10/Education 2/Award 1/
+ExperienceTag 12, Java/Spring Boot/AI/RAG/Redis 등 백엔드+AI 프로필)로
+OPEN ALIO 공고 7건을 테스트한 결과, "한국교통안전공단 AI서비스개발"과
+"한전KDN AI기반 로봇플랫폼 개발 연구과제"(둘 다 `jobCategory`=`정보통신`)가
+`overallScore=0.0`으로 나왔다 — "정보통신"처럼 광범위한 직군 라벨이
+"Java"/"Spring Boot"/"정보처리기사" 같은 PKB의 구체적 기술 어휘와 문자열
+수준에서 절대 겹치지 않기 때문이다. 반대로 "한국문화관광연구원"/
+"국방과학연구소"는 `jobCategory`에 우연히 포함된 "연구"라는 조각이 PKB의
+RAG 연구 경험과 substring으로 매칭돼 실제 관련성과 무관하게 `0.42`라는
+상대적으로 높은 점수를 받았다. ADR-0026이 LLM/embedding을 배제한
+근거("`JobPosting`에 자유 서술형 자격요건 텍스트가 사실상 없어 LLM에게
+풍부한 판단을 맡기면 환각 위험이 크다")는 여전히 유효하지만, 이번 실측은
+그 반대급부 — deterministic 방식 자체도 "광범위 직군 taxonomy vs 구체적
+기술/경험" 사이의 semantic gap을 근본적으로 못 메운다는 것을 보여준다.
+`JobPosting.title`을 전혀 쓰지 않은 것도 원인 중 하나였다. 이 gap을
+메우려면 의미 기반 판단이 필요하지만, "존재하지 않는 요건을 만들어내지
+않는다"는 ADR-0026의 핵심 제약은 그대로 유지해야 한다.
+
+**결정**:
+
+1. **`JobPosting`의 실제 필드(특히 `title`)와 승인된 전체 PKB를 Claude
+   structured output으로 의미 비교하는 신규 병렬 API를 추가한다.**
+   기존 `com.anthropic:anthropic-java` SDK(ADR-0024)를 그대로 재사용하고
+   새 provider는 도입하지 않는다. `pkbimport/extraction/llm/`(interface +
+   단일 구현체 + prompt builder + exception) 패턴을 `match/semantic/`에
+   그대로 미러링한다. 현재 PKB 규모(6/10/2/1)에서는 전체를 한 요청에
+   직접 입력해도 매우 작으므로 embedding/pgvector/candidate retrieval/
+   chunking은 도입하지 않는다(PKB 규모가 크게 늘어나면 재검토).
+2. **MATCH-001과 완전히 독립적으로 계산하되, 응답에 두 점수를 함께
+   노출한다(`deterministicScore` + `semanticScore`).** 검토한 대안: (A)
+   MATCH-001 점수를 semantic 판단의 추가 feature로 LLM에 제공 — 기각.
+   deterministic 0점(VALIDATE-001에서 실측된 잘못된 0점)이 LLM 판단을
+   부당하게 끌어내릴 위험이 있고, 이번 ADR이 해결하려는 문제 자체가
+   "deterministic 채점의 구조적 한계"이므로 그 결과를 다시 LLM 입력에
+   섞는 것은 문제를 절반만 해결한다. (B) 완전 독립 계산 + 응답에서도
+   semantic 결과만 노출 — 기각(부분). deterministic 결과를 아예 숨기면
+   두 방식의 차이를 사용자가 관찰할 수 없어 향후 검증(어느 쪽이 실사용에
+   더 유용한지)이 어려워진다. 최종 채택은 "계산은 B처럼 독립, 노출은
+   병기"로 A/B를 조합한 형태다 — `SemanticJobMatchService`는
+   `JobMatchService.match()`를 호출하지 않고 `CareerMatchEngine`을 직접
+   호출해 `deterministicScore`를 얻는다(MATCH-001 전용 metric이 semantic
+   요청으로 오염되지 않도록).
+3. **ID 기반 검증으로 hallucination을 방지한다.** LLM은 새 경험/자격증/
+   학력/수상을 생성할 수 없고, 프롬프트에 실제로 포함시킨 PKB item id
+   중에서만 선택해야 한다. 응답에 포함되지 않은 id가 하나라도 나오면
+   전체 응답을 실패 처리한다(all-or-nothing, ADR-0024 결정 6과 동일
+   사상 — partial success 미채택). `score`가 `[0,1]` 범위를 벗어나도
+   동일하게 전체 실패(clamp 안 함). 중복 id는 hallucination이 아니므로
+   최고 score만 남기고 계속 진행한다. 응답의 `title` 필드는 LLM 출력이
+   아니라 검증된 id로 서버가 실제 엔티티를 조회해 채운다 — LLM이 실제와
+   다른 제목을 지어낼 표면 자체를 없앤다.
+4. **`POST /api/jobs/{jobId}/semantic-match`로 신규 endpoint를 추가한다
+   (`GET` 아님).** 기존 `GET /api/jobs/{jobId}/match`(MATCH-001, 순수
+   로컬 계산)는 그대로 둔다. 대안 GET 유지는 기각 — 이 프로젝트의 기존
+   컨벤션(`POST /api/collect/alio`, `POST /api/import/jobs/manual`,
+   `POST /api/jobs`)은 부수효과나 외부 비용이 있는 동작에 일관되게
+   POST를 쓴다. LLM 호출은 유료 외부 API 호출이라는 명백한 부수효과가
+   있어 GET의 "안전하고 캐시 가능한 조회" 시맨틱과 맞지 않는다.
+5. **provider(Claude) 실패 시 명시적으로 `502`를 반환한다. Silent
+   fallback을 만들지 않는다.** 대안 — provider 실패 시 MATCH-001
+   deterministic 결과로 조용히 대체(fallback A) — 기각. 응답 형태가
+   semantic 응답과 동일해 보이면 사용자가 이를 실제 semantic 판단
+   결과로 착각할 위험이 크고, 이는 "AI가 사용자가 하지 않은 판단을
+   한 것처럼 보이게 하지 않는다"는 이 프로젝트의 근거 기반 검증 원칙과
+   충돌한다. fallback을 쓰더라도 `matchMethod=DETERMINISTIC_FALLBACK`
+   같은 필드로 명시해야 한다는 조건을 붙이면 결국 구현 복잡도(두 응답
+   스키마, 두 코드 경로)만 커지고, 클라이언트는 이미 존재하는
+   `GET /api/jobs/{jobId}/match`를 별도로 호출해 deterministic 결과를
+   얻을 수 있으므로 서버가 대신 fallback해줄 필요성이 낮다. MVP 단계는
+   명시적 실패가 더 단순하다.
+6. **Evidence는 자유 텍스트 원문 인용이 아니라 닫힌 enum 목록으로
+   표현한다.** `EvidenceSource`(`JOB_TITLE`/`JOB_CATEGORY`/`CAREER_LEVEL`/
+   `EDUCATION_REQUIREMENT`/`EXPERIENCE_TAG`/`EXPERIENCE_TITLE`/
+   `EXPERIENCE_SUMMARY`/`EXPERIENCE_DETAIL`/`CERTIFICATION_NAME`/
+   `CERTIFICATION_DESCRIPTION`/`EDUCATION_MAJOR`/`EDUCATION_DESCRIPTION`/
+   `AWARD_TITLE`/`AWARD_DESCRIPTION`) 목록 + 짧은(최대 200자) 자연어
+   `reason` 1문장을 함께 반환한다. 대안 — LLM이 실제 원문을 정확히
+   인용(quote)하게 하고 서버가 substring으로 검증 — 기각. LLM이 원문을
+   토씨 하나 틀리지 않고 재인용한다는 보장이 없고, 이를 검증하려면 또
+   다른 취약한 문자열 매칭 로직이 필요해진다. enum은 "어떤 입력 필드
+   *카테고리*에 근거했는가"를 구조적으로 검증 가능하게 강제하면서, 원문
+   재인용 실패로 인한 불필요한 검증 실패를 없앤다. `reason`의 자연어
+   내용 자체는 서버가 검증하지 않는다(자연어 검증은 신뢰할 수 없다는
+   ADR-0026 이래의 원칙과 동일).
+7. **eligibility(경력구분/학력요건 충족 여부) 판정은 이번 라운드에서
+   제외한다.** `SemanticJobMatchResponse`에 관련 필드를 두지 않는다.
+   PKB에는 지원자의 "경력 연차"나 "재직 여부"를 판단할 명시적 필드가
+   없어(`CareerExperience`는 `startDate`/`endDate`만 있고 연차 합산 로직이
+   없음) 새로운 deterministic 계산이나 추가 LLM 추론이 필요해 범위가
+   커지고, `JobPosting.careerLevel`/`educationRequirement` 자체가 ALIO의
+   단순 분류값이라 모호하다는 점은 VALIDATE-001에서 이미 확인된 문제다
+   (ADR-0026 결정 2와 같은 이유). 필요성이 실사용에서 명확히 드러나면
+   별도 Task(가칭 MATCH-003)에서 좁게 재검토한다.
+
+**대안**: 각 결정 항목에서 기각한 대안은 위 결정 2/4/5/6에 함께 기술했다.
+추가로 검토했으나 기각한 것: **MATCH-001을 semantic 방식으로 완전히
+대체(삭제)** — 기각. ADR-0026의 deterministic 채점은 여전히 저렴하고
+100% 재현 가능하며 evidence가 항상 실제 필드 값이라는 장점이 있어,
+LLM 호출 실패/비용 상황에서도 항상 쓸 수 있는 baseline으로 유지할
+가치가 있다. **매칭 결과 영속화(캐싱)** — 기각(이번 시점). MATCH-001과
+동일 이유(ADR-0026 결정 3) — 트래픽/요청 빈도 데이터가 없다.
+
+**이유**: MATCH-001이 증명한 "deterministic 방식이 짧고 정형화된
+텍스트에는 정직하고 저렴하다"는 장점과, 이번 VALIDATE-001이 증명한
+"광범위 직군 taxonomy는 deterministic 방식으로 못 메운다"는 한계를
+동시에 인정하고, 두 방식을 경쟁시키지 않고 **병존**시키는 것이 가장
+단순하면서도 실질적인 개선이다. hallucination 방지는 ID 기반 검증(결정
+3)과 evidence enum(결정 6)이라는, 자연어를 신뢰하지 않고 구조적으로
+검증 가능한 것만 검증한다는 일관된 원칙으로 달성한다 — 이는 AGENTS.md의
+"AI가 사용자가 하지 않은 경험/수치를 만들어내지 못하게 막는다"는 핵심
+제약을 매칭 기능에도 계속 일관되게 적용한 것이다.
+
+**영향**: `POST /api/jobs/{jobId}/semantic-match`는 유료 외부 API를
+호출하는 새 endpoint이므로, provider 콘솔의 사용량/비용 알림 설정을
+계속 권장한다(ADR-0024와 동일). `deterministicScore`/`semanticScore`
+두 점수가 응답에 함께 노출되므로, 향후 frontend/AGENT를 설계할 때 어느
+점수를 대표값으로 쓸지 혼동하지 않도록 "semanticScore가 이 API의 대표
+점수"라는 점을 API 문서/DTO 주석에 계속 명시해야 한다. 이번 Task의
+`[수동]` E2E 검증(Case A~D)에서 prompt/evidence 품질 문제가 드러나면
+PKB-008 → PKB-008.1(ADR-0027)과 같은 후속 보정 Task가 필요할 수 있다.
+eligibility를 나중에 추가하는 시점에는 이번 ADR의 evidence/ID 검증
+원칙을 그대로 유지해야 한다.
