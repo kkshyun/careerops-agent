@@ -10,7 +10,7 @@ import java.util.Set;
 @Component
 public class PlaceholderValueSanitizer {
     private static final Set<String> PLACEHOLDERS = Set.of(
-            "현재", "미상", "해당없음", "해당 없음", "n/a", "unknown", "없음");
+            "현재", "미상", "해당없음", "해당 없음", "n/a", "unknown", "없음", "-", "tbd");
 
     public StructuredExtractionResult sanitize(StructuredExtractionResult result) {
         return new StructuredExtractionResult(
@@ -48,6 +48,7 @@ public class PlaceholderValueSanitizer {
 
     private String sanitize(String value) {
         if (value == null) return null;
-        return PLACEHOLDERS.contains(value.trim().toLowerCase(Locale.ROOT)) ? null : value;
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return normalized.isEmpty() || PLACEHOLDERS.contains(normalized) ? null : value;
     }
 }

@@ -9,6 +9,7 @@ import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.StructuredMessage;
 import com.anthropic.models.messages.StructuredMessageCreateParams;
+import com.anthropic.models.messages.StopReason;
 import com.careerops.backend.pkbimport.DocumentType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -19,7 +20,7 @@ import java.time.Duration;
 
 @Component
 public class AnthropicDocumentExtractionClient implements DocumentExtractionClient {
-    private static final long MAX_TOKENS = 8_192;
+    static final long MAX_TOKENS = 16_000;
 
     private final ExtractionPromptBuilder promptBuilder;
     private final String apiKey;
@@ -62,6 +63,7 @@ public class AnthropicDocumentExtractionClient implements DocumentExtractionClie
                     .outputConfig(StructuredExtractionResult.class)
                     .build();
             StructuredMessage<StructuredExtractionResult> response = client.messages().create(params);
+            rejectTruncatedResponse(response.stopReason().orElse(null));
             return response.content().stream()
                     .flatMap(block -> block.text().stream())
                     .findFirst()
@@ -72,6 +74,20 @@ public class AnthropicDocumentExtractionClient implements DocumentExtractionClie
             throw exception;
         } catch (RuntimeException exception) {
             throw classify(exception);
+        }
+    }
+
+    static void rejectTruncatedResponse(StopReason stopReason) {
+        if (StopReason.MAX_TOKENS.equals(stopReason)
+                || StopReason.MODEL_CONTEXT_WINDOW_EXCEEDED.equals(stopReason)) {
+            throw new LlmExtractionException(LlmExtractionException.Reason.MALFORMED_RESPONSE,
+                    new OutputTruncatedException(stopReason));
+        }
+    }
+
+    static final class OutputTruncatedException extends RuntimeException {
+        OutputTruncatedException(StopReason stopReason) {
+            super(stopReason.asString());
         }
     }
 

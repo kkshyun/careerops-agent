@@ -14,13 +14,13 @@ class PlaceholderValueSanitizerTest {
     @Test
     void replacesExactPlaceholdersIgnoringWhitespaceAndCase() {
         StructuredExtractionResult result = sanitizer.sanitize(new StructuredExtractionResult(List.of(),
-                List.of(new CertificationCreateRequest(" N/A ", "Unknown", null, null, "real", "현재")),
+                List.of(new CertificationCreateRequest(" N/A ", "  ", null, null, "-", "TbD")),
                 List.of(), List.of(new AwardCreateRequest("없음", "미상", null, "해당 없음"))));
 
         CertificationCreateRequest certification = result.certifications().getFirst();
         assertThat(certification.name()).isNull();
         assertThat(certification.issuer()).isNull();
-        assertThat(certification.credentialId()).isEqualTo("real");
+        assertThat(certification.credentialId()).isNull();
         assertThat(certification.description()).isNull();
         assertThat(result.awards().getFirst().title()).isNull();
         assertThat(result.awards().getFirst().issuer()).isNull();

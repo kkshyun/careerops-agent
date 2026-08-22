@@ -26,7 +26,7 @@ careerops:
     api-key: ${CAREEROPS_ANTHROPIC_API_KEY:}
     model: claude-sonnet-5
     connect-timeout-seconds: 10
-    request-timeout-seconds: 60
+    request-timeout-seconds: 300
   collector:
     alio:
       api-key: ${JOB_ALIO_API_KEY:}

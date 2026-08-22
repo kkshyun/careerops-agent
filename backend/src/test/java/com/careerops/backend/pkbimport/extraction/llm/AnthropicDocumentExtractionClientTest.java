@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.anthropic.errors.AnthropicServiceException;
+import com.anthropic.models.messages.StopReason;
 import com.careerops.backend.pkbimport.DocumentType;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -16,6 +17,30 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class AnthropicDocumentExtractionClientTest {
+    @Test
+    void usesExpandedOutputTokenBudget() {
+        assertThat(AnthropicDocumentExtractionClient.MAX_TOKENS).isEqualTo(16_000);
+    }
+
+    @Test
+    void distinguishesTokenTruncationWithoutLoggingResponseOrInput() {
+        Logger root = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        root.addAppender(appender);
+        try {
+            assertThatThrownBy(() -> AnthropicDocumentExtractionClient.rejectTruncatedResponse(StopReason.MAX_TOKENS))
+                    .isInstanceOfSatisfying(LlmExtractionException.class,
+                            exception -> assertThat(exception.reason())
+                                    .isEqualTo(LlmExtractionException.Reason.MALFORMED_RESPONSE))
+                    .hasCauseInstanceOf(AnthropicDocumentExtractionClient.OutputTruncatedException.class)
+                    .cause().hasMessage("max_tokens");
+            assertThat(appender.list).isEmpty();
+        } finally {
+            root.detachAppender(appender);
+        }
+    }
+
     @Test
     void classifiesTimeoutProviderErrorsAndMalformedResponses() {
         assertReason(new RuntimeException(new SocketTimeoutException("secret timeout response")),

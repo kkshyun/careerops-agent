@@ -1633,6 +1633,80 @@ abstraction(`DocumentExtractionClient`)을 그대로 확장하되, 지금은 그
 
 ---
 
+## ADR-0027: PKB-008.1 — nullable 구조화 스키마, prompt v2,
+## output token 예산 재조정, 좁은 조건의 chunking
+
+- 날짜: 2026-08-22
+- 상태: 확정
+- 관련 Task: PKB-008.1
+
+**문제**: Anthropic Java SDK 2.54.0의 자동 schema 유도는 모든 record
+필드를 `required`로 만들고, 런타임에 인식되는 `Nullable` annotation이
+붙은 필드만 null을 허용한다. 기존 생성 DTO에는 이 annotation이 없어
+모델이 원문에 없는 날짜를 채우거나 optional 필드가 많은 객체 전체를
+누락할 유인이 있었다. 긴 구조화 응답은 8,192 output token 한도에서
+잘릴 수 있고, 최대 50,000자인 문서를 한 요청으로만 처리하면 누락 및
+절단 위험도 커진다. 구현 후 실제 API 호출에서 Anthropic structured
+output은 union type(`type` 배열 또는 `anyOf`) 파라미터를 schema당 최대
+16개만 허용한다는 추가 제약도 확인했다. SDK의 로컬 schema validation은
+이 제한을 검사하지 않아 로컬 schema 생성과 테스트만으로는 발견되지 않았다.
+
+**결정**:
+
+1. 기존 5개 생성 DTO의 optional 필드 중 LocalDate/enum/BigDecimal 12개에만
+   `org.jspecify.annotations.Nullable`을 적용한다. plain String 선택 필드
+   11개는 union 예산을 쓰지 않고 required non-null String으로 유지하며,
+   원문에서 알 수 없으면 모델이 빈 문자열을 반환하도록 prompt로 지시한 뒤
+   sanitizer가 null로 정규화한다. SDK가 runtime reflection으로 annotation을
+   읽으므로 이미 전이 의존성이던
+   `org.jspecify:jspecify:1.0.0`을 `implementation`으로 명시한다.
+2. prompt를 v2로 올려 네 targetType을 각각 독립적으로 탐색하고, 정확한
+   일자가 없는 날짜/enum/숫자는 null, 알 수 없는 선택 String은 빈 문자열로
+   두며, 원문에 명시된 기술만 tag로 만들도록 구체화한다. sanitizer는
+   빈 문자열과 공백만 있는 문자열도 기존 placeholder처럼 null로 바꾼다.
+   기존 문서 태그 격리와 prompt injection 방어는 유지한다.
+3. output 상한을 16,000 token으로 조정한다. request timeout은 최초
+   120초로 설정했으나, 실제 사용자 문서(경험정리, 약 1만자)로 라이브
+   E2E 검증 중 매 시도가 120초를 넘겨 SDK 기본 재시도(네트워크 timeout
+   한정)까지 소진되며 약 6분 뒤에야 최종 timeout으로 실패하는 현상을
+   확인했다 — 16,000 token 분량의 구조화 출력을 실제로 생성하는 데
+   드는 시간이 120초보다 일관되게 길었던 것이지 일시적 네트워크
+   문제가 아니었으므로, 재시도는 실패를 지연시킬 뿐 해결하지 못했다.
+   이에 request timeout을 **300초**로 다시 올렸다(연결 timeout 10초는
+   변경 없음). `stopReason`이 `MAX_TOKENS` 또는 context window
+   초과이면 민감한 원문이나 응답을 기록하지 않고 전용 cause 타입과
+   enum 값으로 구분한다. 외부 오류 분류는 기존 `MALFORMED_RESPONSE`를
+   유지한다.
+4. 20,000자 미만은 기존 단일 요청을 유지한다. 그 이상만 문단 경계에서
+   목표 12,000자로 겹침 없이 나누어 순차 추출하고, 완전히 같은 record만
+   제거한다. 한 chunk라도 실패하면 즉시 같은 예외를 전파해 기존
+   all-or-nothing 정책을 유지한다. API와 orchestration 계층은 변경하지
+   않고 `@Primary` decorator 뒤에 이 동작을 숨긴다.
+
+**대안**:
+
+- **별도 extraction 전용 DTO 도입** — 기각. 기존 create DTO와 필드 및
+  validation을 이중 관리해 drift가 생기며, 확인된 원인은 기존 optional
+  필드에 runtime nullable 메타데이터를 주는 최소 변경으로 직접 해결된다.
+- **모든 문서 chunking 또는 overlap/Map-Reduce** — 기각. 짧은 문서의
+  기존 동작을 불필요하게 바꾸고 중복·경계 병합 복잡도를 만든다. 실제
+  위험이 커지는 20,000자 이상에만 단일 depth chunking을 적용한다.
+- **semantic dedup/embedding 또는 모델 변경** — 기각. 이번 원인은
+  schema·prompt·output budget으로 확인됐으며 별도 품질 시스템을 추가할
+  근거가 없다.
+
+**이유와 영향**: 빈 문자열을 허용하는 String과 달리 LocalDate/enum/숫자는
+타입을 깨지 않고 "모름"을 표현하려면 진짜 nullable union이 필요하다.
+따라서 union은 이 12개에 집중해 API 제한 16개보다 4개 여유를 남긴다.
+prompt와 sanitizer가 String의 빈 문자열 관례를 책임지고, wrapper 전체
+schema의 union 수를 세는 자동 테스트가 SDK 로컬 validation이 놓치는 실제
+provider 제한의 재발을 막는다. prompt와 token 예산은 누락 및 절단의 직접
+원인을 보완하며, 좁은 chunking은 50,000자 상한을 지원하면서 짧은 문서와
+기존 API 계약에 미치는 영향을 제한한다. SDK schema 유도 결과와 chunk
+병합/실패 동작은 네트워크 없는 자동 테스트로 고정한다.
+
+---
+
 ## ADR-0025: ADR-0022 결정 4 정정 — `ImportBatch.complete()`는
 ## conditional UPDATE가 아니라 `findByIdForUpdate` 잠금 + 별도 조회로
 ## "PENDING candidate 없음"을 확인해야 한다

@@ -9,9 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -20,11 +18,14 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest
 class ImportBatchExtractionServiceTest {
     @Autowired ImportBatchExtractionService service;
-    @Autowired FakeClient client;
+    @MockitoBean DocumentExtractionClient client;
     @Autowired SourceDocumentRepository documentRepository;
     @Autowired ImportBatchRepository batchRepository;
     @Autowired ImportBatchService batchService;
@@ -34,7 +35,10 @@ class ImportBatchExtractionServiceTest {
     @Autowired EducationRepository educationRepository;
     @Autowired AwardRepository awardRepository;
 
-    @BeforeEach void resetFake() { client.result = validResult(); client.failure = null; }
+    @BeforeEach void resetFake() {
+        reset(client);
+        when(client.extract(any(), any())).thenReturn(validResult());
+    }
 
     @AfterEach void clean() {
         candidateRepository.deleteAll();
@@ -67,21 +71,22 @@ class ImportBatchExtractionServiceTest {
         ImportBatch extracted = batchRepository.findById(batch.getId()).orElseThrow();
         assertThat(extracted.getExtractedAt()).isNotNull();
         assertThat(extracted.getExtractionProvider()).isEqualTo("anthropic");
-        assertThat(extracted.getExtractionPromptVersion()).isEqualTo("v1");
+        assertThat(extracted.getExtractionPromptVersion()).isEqualTo("v2");
     }
 
     @Test
     void validationFailureRollsBackEveryCandidateAndLeavesBatchRetryable() {
         ImportBatch batch = openBatch("validation raw");
-        client.result = new StructuredExtractionResult(
+        when(client.extract(any(), any())).thenReturn(new StructuredExtractionResult(
                 List.of(validCareer()), List.of(new CertificationCreateRequest("미상", null, null, null, null, null)),
-                List.of(), List.of());
+                List.of(), List.of()));
 
         assertStatus(() -> service.extract(batch.getId()), HttpStatus.BAD_REQUEST);
         assertThat(candidates(batch.getId())).isEmpty();
         assertThat(batchRepository.findById(batch.getId()).orElseThrow().getExtractedAt()).isNull();
 
-        client.result = new StructuredExtractionResult(List.of(validCareer()), List.of(), List.of(), List.of());
+        when(client.extract(any(), any())).thenReturn(
+                new StructuredExtractionResult(List.of(validCareer()), List.of(), List.of(), List.of()));
         assertThat(service.extract(batch.getId()).createdCandidateCount()).isEqualTo(1);
     }
 
@@ -93,7 +98,8 @@ class ImportBatchExtractionServiceTest {
                 new FailureCase(LlmExtractionException.Reason.NETWORK_TIMEOUT, HttpStatus.BAD_GATEWAY),
                 new FailureCase(LlmExtractionException.Reason.PROVIDER_RETRY_EXHAUSTED, HttpStatus.SERVICE_UNAVAILABLE))) {
             ImportBatch batch = openBatch("failure " + testCase.reason());
-            client.failure = new LlmExtractionException(testCase.reason());
+            reset(client);
+            when(client.extract(any(), any())).thenThrow(new LlmExtractionException(testCase.reason()));
             assertStatus(() -> service.extract(batch.getId()), testCase.status());
             assertThat(candidates(batch.getId())).isEmpty();
             assertThat(batchRepository.findById(batch.getId()).orElseThrow().getExtractedAt()).isNull();
@@ -116,12 +122,35 @@ class ImportBatchExtractionServiceTest {
     @Test
     void emptyStructuredResultIsSuccessful() {
         ImportBatch batch = openBatch("no facts");
-        client.result = new StructuredExtractionResult(List.of(), List.of(), List.of(), List.of());
+        when(client.extract(any(), any())).thenReturn(
+                new StructuredExtractionResult(List.of(), List.of(), List.of(), List.of()));
         ExtractionResponse response = service.extract(batch.getId());
         assertThat(response.createdCandidateCount()).isZero();
         assertThat(response.candidateIds()).isEmpty();
         assertThat(response.counts().values()).containsOnly(0);
         assertThat(batchRepository.findById(batch.getId()).orElseThrow().getExtractedAt()).isNotNull();
+    }
+
+    @Test
+    void createsMultipleOptionalSparseCertificationEducationAndAwardCandidates() {
+        ImportBatch batch = openBatch("synthetic mixed facts");
+        when(client.extract(any(), any())).thenReturn(new StructuredExtractionResult(List.of(),
+                List.of(
+                        new CertificationCreateRequest("자격 A", null, null, null, null, null),
+                        new CertificationCreateRequest("자격 B", "기관 B", null, null, null, null)),
+                List.of(
+                        new EducationCreateRequest("학교 A", null, null, null, null, null, null, null, null),
+                        new EducationCreateRequest("학교 B", "전공 B", null, null, null, null, null, null, null)),
+                List.of(
+                        new AwardCreateRequest("수상 A", null, null, null),
+                        new AwardCreateRequest("수상 B", "기관 B", null, null))));
+
+        ExtractionResponse response = service.extract(batch.getId());
+
+        assertThat(response.createdCandidateCount()).isEqualTo(6);
+        assertThat(response.counts()).containsEntry(CandidateTargetType.CERTIFICATION, 2)
+                .containsEntry(CandidateTargetType.EDUCATION, 2)
+                .containsEntry(CandidateTargetType.AWARD, 2);
     }
 
     private ImportBatch openBatch(String rawText) {
@@ -155,17 +184,4 @@ class ImportBatchExtractionServiceTest {
 
     private record FailureCase(LlmExtractionException.Reason reason, HttpStatus status) {}
 
-    @TestConfiguration
-    static class FakeConfiguration {
-        @Bean @Primary FakeClient fakeDocumentExtractionClient() { return new FakeClient(); }
-    }
-
-    static class FakeClient implements DocumentExtractionClient {
-        StructuredExtractionResult result;
-        LlmExtractionException failure;
-        @Override public StructuredExtractionResult extract(String rawText, DocumentType documentType) {
-            if (failure != null) throw failure;
-            return result;
-        }
-    }
 }
