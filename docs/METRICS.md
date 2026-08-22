@@ -185,6 +185,14 @@ JOB-001/COLLECT-001이 유지해온 "공통 예외 처리 계층을 만들지 �
 | `careerops_semantic_match_duration_seconds` | `careerops.semantic-match.duration` | Timer | 없음 | LLM 호출을 포함한 semantic 매칭 처리 시간 | `SemanticJobMatchService.match()` |
 | `careerops_semantic_match_score` | `careerops.semantic-match.score` | DistributionSummary | 없음 | 성공 요청의 대표 relevance `semanticScore` 분포 | `SemanticJobMatchService.match()` |
 
+**채용공고 지원 전략 분석 (AGENT-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_agent_analysis_request_total` | `careerops.agent-analysis.request` | Counter | `result`=`success`\|`job_not_found`\|`pkb_empty`\|`provider_error`\|`validation_failed` | 지원 전략 분석 요청 결과 분포 | `AgentAnalysisService.analyze()` |
+| `careerops_agent_analysis_duration_seconds` | `careerops.agent-analysis.duration` | Timer | 없음 | semantic match 호출을 포함한 전체 처리 시간 | `AgentAnalysisService.analyze()` |
+| `careerops_agent_analysis_recommended_experiences` | `careerops.agent-analysis.recommended_experiences` | DistributionSummary | 없음 | 성공 요청의 최종 `recommendedExperiences` 개수 분포 | `AgentAnalysisService.analyze()` |
+
 `score`/`jobId`/`companyName`은 태그로 넣지 않는다. 자유값 또는 고유값을
 label로 만들 때 발생하는 높은 cardinality를 피하면서 요청 결과, 지연,
 관련도 분포만 관찰한다.

@@ -2062,3 +2062,159 @@ LLM 호출 실패/비용 상황에서도 항상 쓸 수 있는 baseline으로 �
 PKB-008 → PKB-008.1(ADR-0027)과 같은 후속 보정 Task가 필요할 수 있다.
 eligibility를 나중에 추가하는 시점에는 이번 ADR의 evidence/ID 검증
 원칙을 그대로 유지해야 한다.
+
+---
+
+## ADR-0029: 지원 전략 분석(AGENT-001) — MATCH-002 후보 풀 재사용, score는
+## MATCH-002 단일 소유, reason 미전달, 별도 evidence enum, PKB empty=409
+
+- 날짜: 2026-08-22
+- 상태: 확정
+- 관련 Task: AGENT-001
+
+**문제**: MATCH-001(ADR-0026)/MATCH-002(ADR-0028)는 "이 경험이 이 공고와
+얼마나 관련 있는가?"에 답한다. `docs/PROJECT.md`/`docs/ROADMAP.md`의 다음
+단계는 그 다음 질문 — "그렇다면 무엇을 강조하고 어떤 경험을 어떤 관점에서
+활용해야 하는가?"다. 이를 위해 두 번째 LLM 호출(채용공고 + PKB를 보고
+전략을 정리)이 필요한데, 순진하게 설계하면 세 가지 위험이 생긴다: (1)
+전체 PKB를 다시 LLM에 넣으면 프롬프트가 커지고 관련성 낮은 공고에서도
+LLM이 억지로 그럴듯한 전략을 만들어낼 여지가 생긴다, (2) 이 두 번째 LLM이
+"얼마나 관련 있는가"를 다시 판단하게 하면 MATCH-002와 서로 다른(심지어
+모순되는) 두 관련도 점수가 API 전체에 공존하게 되어 "어느 점수가
+맞는가"라는 새로운 혼란을 만든다, (3) MATCH-002가 이미 LLM으로 생성한
+자연어 `reason`을 두 번째 LLM에게 사실처럼 전달하면, 첫 번째 LLM의 판단
+오류나 과장이 두 번째 LLM에서 한 번 더 증폭(hallucination의 chain)될
+위험이 있다. 1차 설계 리뷰에서 사용자가 (2)를 명시적으로 지적해 "AGENT는
+새로운 관련도 점수를 만들지 않는다"로 설계를 수정했다.
+
+**결정**:
+
+1. **후보 풀 재사용, 전체 PKB 재입력 금지.** `AgentAnalysisService`는
+   먼저 `SemanticJobMatchService.match(jobId)`(기존 `@Autowired` 빈)를
+   그대로 호출해 `SemanticJobMatchResponse`를 얻고, 그 응답의 4개 match
+   배열(`experienceMatches` 등, 최대 14개)에 있는 id만으로 두 번째 LLM의
+   입력을 구성한다. MATCH-002가 이미 전체 PKB를 훑어 관련도 상위를
+   골라뒀으므로 이를 재사용하면 프롬프트가 작아지고, MATCH-002가 애초에
+   매치를 거의 못 찾은 공고(후보 풀이 작거나 비어 있음)에서는 두 번째
+   LLM의 재료 자체가 부족해져 억지 positioning이 구조적으로 억제된다.
+   `SemanticJobMatchService.match()`를 그대로 호출하므로
+   `careerops.semantic-match.*` 지표가 함께 증가하는 것은 의도된 정상
+   동작이다(별도 우회/복제 코드를 만들지 않는다 — 만들면 두 코드 경로가
+   미묘하게 갈라질 위험과 유지보수 비용만 늘어난다).
+2. **score는 MATCH-002 단일 소유(single source of truth), 두 번째 LLM은
+   score를 생성하지 않는다.** `RawAgentAnalysisResult`/
+   `RawExperienceRecommendation`/`RawPkbRecommendation`(LLM structured
+   output)에는 `score`/`relevanceScore` 필드를 아예 두지 않는다. LLM은
+   추천 배열의 **순서**로만 "전략적으로 무엇을 더 우선할지"를 표현하고,
+   서버가 이 순서를 그대로 보존해(재정렬하지 않음) 경험 추천에 한해
+   `priority = 1..N`을 부여한다. 최종 응답에 노출하는 점수 필드
+   (`semanticMatchScore`)는 서버가 MATCH-002 응답에서 해당 id의 원래
+   `score`를 그대로 찾아 채운 값이다. 필드명을 `relevanceScore`처럼
+   모호하게 짓지 않고 `semanticMatchScore`로 명명해, 이 값의 출처가
+   MATCH-002라는 사실이 이름에서 드러나게 한다. 이 구조적 분리 덕분에
+   "관련도"와 "전략적 우선순위"라는 서로 다른 두 질문에 각각 정확히 한
+   LLM 호출만 책임지게 되어, 두 점수가 서로 다른 값을 주장하며 충돌하는
+   상황 자체가 설계상 발생할 수 없다.
+3. **MATCH-002의 자연어 `reason`은 두 번째 LLM 프롬프트에 절대 포함하지
+   않는다.** 대신 실제 PKB 원본 필드(title/summary/detail/tags/bullets
+   등)와 MATCH-002의 evidence enum(카테고리 힌트로만), 숫자 score만
+   전달한다. `reason`은 첫 번째 LLM이 만든 자연어 판단이라 그 자체로
+   이미 어느 정도 해석/요약이 섞여 있다 — 이를 사실처럼 두 번째 LLM에
+   넘기면, 첫 번째 LLM의 사소한 과장이나 오류가 "이미 검증된 사실"인 것
+   처럼 두 번째 LLM 출력에 스며들어 hallucination이 한 단계 더 증폭될
+   위험이 있다. 두 번째 LLM은 반드시 원본 데이터에서 스스로 reason/
+   emphasisPoints를 새로 생성해야 하며, 그래야 각 LLM 호출의 근거를
+   독립적으로 원본 데이터까지 추적할 수 있다.
+4. **hallucination 방지는 여전히 ID 기반 all-or-nothing이되, tie-break는
+   score가 아니라 배열 순서다.** LLM은 프롬프트에 실제로 포함된 후보 풀
+   id 중에서만 선택할 수 있고, 카테고리 후보 풀에 없는 id가 하나라도
+   나오면 응답 전체를 실패 처리한다(MATCH-002/PKB-008과 동일 all-or-nothing
+   사상). 다만 MATCH-002는 "중복 id는 최고 score 유지", "상한 초과는 score
+   내림차순 truncate"였는데, 이번엔 LLM이 score를 만들지 않으므로 이
+   기준을 쓸 수 없다 — 대신 "중복 id는 배열에서 먼저 등장한 것만 유지",
+   "상한 초과는 배열 순서상 앞쪽 N개만 유지"로 tie-break 기준만 바꾸고,
+   "이것들은 hallucination이 아니라 사소한 이탈이라 전체 실패로 처리하지
+   않는다"는 사상은 그대로 유지한다.
+5. **`match.dto.EvidenceSource`를 확장하지 않고 별도
+   `agent.dto.AgentEvidenceSource` enum을 신설한다.** MATCH-002는 이미 3
+   라운드 리뷰를 거쳐 PASS된 production API/DTO 계약이다. 이번 Task가
+   필요로 하는 값은 기존 값 전부 + `EXPERIENCE_BULLET` 1개뿐이라 "기존
+   enum에 값 하나 추가"가 얼핏 최소 변경처럼 보이지만, 그렇게 하면
+   "MATCH-002 파일은 한 글자도 수정하지 않는다"는 이번 설계 전제와
+   충돌하고, 이후 AGENT 쪽 요구로 evidence 값이 더 늘어나거나 의미가
+   갈릴 때 MATCH-002의 production 계약까지 함께 흔들리게 된다. 가벼운
+   enum 복제 비용(가장 값 대부분 중복)을 감수하고 두 API의 evidence 계약을
+   독립적으로 진화 가능하게 분리하는 쪽을 택한다.
+6. **PKB(`CareerExperience`/`Certification`/`Education`/`Award`) 4종이
+   전부 0건이면 200이 아니라 명시적 409를 반환하고, LLM을 아예 호출하지
+   않는다.** MATCH-002는 PKB가 비어 있어도 "계산할 것이 없다"는 사실
+   자체가 유효한 답이라 `semanticScore=0.0`인 200을 반환했지만, AGENT의
+   질문("무엇을 강조해야 하는가")은 강조할 대상 PKB가 하나도 없으면
+   질문 자체가 성립하지 않는다 — 이 경우 200과 함께 빈 배열을 주면
+   클라이언트가 "분석했지만 추천할 게 없다"와 "분석 자체가 불가능했다"를
+   구분할 수 없다. `ImportBatchService`/`ImportCandidateService`가 "현재
+   상태가 이 동작을 지원하지 않는다"는 사실을 전역 예외 처리 계층 없이
+   서비스가 직접 `ResponseStatusException(HttpStatus.CONFLICT, message)`로
+   던지는 기존 컨벤션과 같은 성격의 문제로 보고 동일한 패턴(409, 서비스가
+   직접 던짐, `AgentAnalysisException`을 거치지 않음)을 그대로 적용한다.
+   이 체크는 `semanticJobMatchService.match()` 호출 이전에 수행해, PKB가
+   비어 있는 요청에서는 semantic match 호출조차 발생하지 않게 한다(불필요한
+   LLM 호출 비용을 두 단계 모두에서 절약).
+7. **timeout은 MATCH-002/PKB-008.1과 별개 네임스페이스
+   (`careerops.ai.agent.*`, connect 10/request 60)로 신설한다.** MATCH-002의
+   45초는 이번 스키마(최대 14개 후보에 대한 reason/emphasisPoints, 자연어
+   요약 몇 개)와 출력 규모가 다르고, PKB-008.1의 300초는 16,000 output
+   token 구조화 추출이라는 훨씬 큰 작업 기준이라 재사용하지 않는다. "45s +
+   60s = 105s가 이 API의 hard maximum"이라는 표현은 쓰지 않는다 — 이는
+   provider별 request timeout일 뿐이며, SDK 기본 재시도(429/5xx/네트워크
+   timeout 한정)로 인해 실제 wall-clock은 더 길어질 수 있다. 이번 Task에서
+   별도 end-to-end HTTP timeout은 추가하지 않는다.
+
+**대안**:
+- **두 번째 LLM이 관련도를 재판단하고 그 값을 최종 응답의 대표 점수로
+  사용** — 기각(사용자 리뷰로 수정). MATCH-002와 별도로 또 다른 관련도
+  판단이 생기면 두 점수가 다른 근거(다른 프롬프트, 다른 후보 풀 노출)로
+  계산되어 서로 모순될 수 있고, 사용자가 "어느 점수를 믿어야 하는가"를
+  또 판단해야 하는 부담이 생긴다.
+- **MATCH-002 `reason`을 그대로 두 번째 LLM에 전달(맥락 제공 목적)** —
+  기각. hallucination chain 위험이 사실 기반 판단이라는 이 프로젝트의
+  핵심 제약과 직접 충돌한다. 실제 원본 데이터가 이미 프롬프트에 포함돼
+  있으므로 `reason`을 추가로 줄 실익도 크지 않다.
+- **전체 승인 PKB를 두 번째 LLM에도 다시 입력** — 기각. 프롬프트가
+  커지고, 후보 풀 좁히기가 주는 "관련성 낮은 공고에서 억지 positioning
+  억제" 효과를 잃는다. PKB 규모가 크게 늘어나 MATCH-002의 후보 풀
+  선별만으로 충분하지 않다는 근거가 생기면 재검토한다.
+- **`match.dto.EvidenceSource`에 `EXPERIENCE_BULLET` 추가 후 재사용** —
+  기각. 위 결정 5 이유. MATCH-002 production DTO를 backward-compatible하게
+  수정하는 것 자체는 기술적으로 가능하지만, 이번 Task의 전제("MATCH-002
+  전 파일 무변경")와 "두 API의 evidence 계약을 독립적으로 진화시킨다"는
+  판단에 따라 채택하지 않는다.
+- **PKB empty를 MATCH-002처럼 200 + 빈 배열로 처리** — 기각. 위 결정 6
+  이유. "추천할 게 없다"와 "분석이 애초에 불가능하다"를 구분해야 하는
+  이 API의 특성상 명시적 실패가 더 정직하다.
+- **`careerops.ai.match.*` 또는 PKB-008.1 timeout 재사용** — 기각. 위
+  결정 7 이유(출력 규모가 다름).
+
+**이유**: 이 결정 전체를 관통하는 원칙은 "각 LLM 호출은 정확히 하나의
+질문에만 답하고, 그 질문에 필요한 최소한의 근거만 본다"는 것이다.
+MATCH-002는 "관련도"를, AGENT는 "우선순위/포지셔닝"을 답한다 — 이
+경계를 흐리면(두 번째 LLM이 관련도도 다시 판단하면) 책임 소재가
+모호해지고 사용자가 두 점수 중 무엇을 신뢰해야 할지 판단해야 하는 부담이
+생긴다. reason 미전달과 ID 기반 all-or-nothing 검증은 AGENTS.md의 "AI가
+사용자가 하지 않은 경험/수치를 만들어내지 못하게 막는다"는 핵심 제약을
+두 번째 LLM 호출에도 동일하게, 그리고 첫 번째 LLM의 판단이 두 번째로
+전파되는 새로운 경로까지 포함해 일관되게 적용한 것이다.
+
+**영향**: `AgentAnalysisResponse`의 `semanticMatchScore` 필드가
+MATCH-002의 `score`와 항상 동일한 값을 가져야 한다는 불변식이 생긴다 —
+향후 MATCH-002의 점수 계산 방식이 바뀌면 AGENT 응답도 자동으로 그 변경을
+반영하게 된다(재계산 로직을 따로 두지 않았으므로 자연히 따라간다). 두
+개의 독립적인 Anthropic 호출(semantic match + agent analysis)이 순차로
+발생하므로 요청당 지연/비용이 MATCH-002 단독 대비 늘어난다 — 이는
+`careerops.agent-analysis.duration`/`careerops.semantic-match.duration`
+두 지표를 함께 관찰해야 실제 병목을 파악할 수 있다는 뜻이다. 별도
+`AgentEvidenceSource` enum을 유지하는 한, 두 evidence enum 값 목록이
+우연히 갈리지 않도록(둘 다 같은 JobPosting/PKB 필드 집합을 가리키므로)
+향후 한쪽에 값을 추가할 때 다른 쪽도 함께 검토해야 한다는 수동 동기화
+부담이 생긴다 — 실제로 값 집합이 크게 벌어지는 사례가 반복되면 공유
+타입으로 통합하는 재검토가 필요할 수 있다.

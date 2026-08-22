@@ -5,6 +5,7 @@ import java.util.List;
 
 public interface ExperienceBulletRepository extends JpaRepository<ExperienceBullet, Long> {
     List<ExperienceBullet> findByCareerExperienceIdOrderBySortOrderAsc(Long careerExperienceId);
+    List<ExperienceBullet> findByCareerExperienceIdIn(List<Long> careerExperienceIds);
     void deleteByCareerExperienceId(Long careerExperienceId);
     long countByCareerExperienceId(Long careerExperienceId);
 }
