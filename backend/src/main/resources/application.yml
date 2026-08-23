@@ -33,6 +33,9 @@ careerops:
     agent:
       connect-timeout-seconds: 10
       request-timeout-seconds: 60
+    application-draft:
+      connect-timeout-seconds: 10
+      request-timeout-seconds: 150
   collector:
     alio:
       api-key: ${JOB_ALIO_API_KEY:}

@@ -193,6 +193,18 @@ JOB-001/COLLECT-001이 유지해온 "공통 예외 처리 계층을 만들지 �
 | `careerops_agent_analysis_duration_seconds` | `careerops.agent-analysis.duration` | Timer | 없음 | semantic match 호출을 포함한 전체 처리 시간 | `AgentAnalysisService.analyze()` |
 | `careerops_agent_analysis_recommended_experiences` | `careerops.agent-analysis.recommended_experiences` | DistributionSummary | 없음 | 성공 요청의 최종 `recommendedExperiences` 개수 분포 | `AgentAnalysisService.analyze()` |
 
+**자기소개서 초안 생성 (AGENT-002)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_application_draft_request_total` | `careerops.application-draft.request` | Counter | `result`=`success`\|`job_not_found`\|`pkb_empty`\|`invalid_request`\|`provider_error`\|`validation_failed` | 자기소개서 초안 생성 요청 결과 분포 | `ApplicationDraftService.draft()` |
+| `careerops_application_draft_duration_seconds` | `careerops.application-draft.duration` | Timer | 없음 | AGENT-001 호출(semantic match+agent analysis 포함)과 draft plan(+repair)을 포함한 전체 처리 시간 | `ApplicationDraftService.draft()` |
+| `careerops_application_draft_questions` | `careerops.application-draft.questions` | DistributionSummary | 없음 | 요청당 문항 수 분포 | `ApplicationDraftService.draft()` |
+| `careerops_application_draft_characters` | `careerops.application-draft.characters` | DistributionSummary | 없음 | 성공 요청의 문항별 `characterCount` 분포 | `ApplicationDraftService.draft()` |
+| `careerops_application_draft_repair_total` | `careerops.application-draft.repair` | Counter | `result`=`not_needed`\|`success`\|`failed` | 글자수 repair 배치 호출 결과 분포 | `ApplicationDraftService.draft()` |
+
+이 API 호출로 `careerops.semantic-match.*`/`careerops.agent-analysis.*`도 자연히 함께 증가하는 것이 의도된 연쇄다.
+
 `score`/`jobId`/`companyName`은 태그로 넣지 않는다. 자유값 또는 고유값을
 label로 만들 때 발생하는 높은 cardinality를 피하면서 요청 결과, 지연,
 관련도 분포만 관찰한다.

@@ -2218,3 +2218,180 @@ MATCH-002의 `score`와 항상 동일한 값을 가져야 한다는 불변식이
 향후 한쪽에 값을 추가할 때 다른 쪽도 함께 검토해야 한다는 수동 동기화
 부담이 생긴다 — 실제로 값 집합이 크게 벌어지는 사례가 반복되면 공유
 타입으로 통합하는 재검토가 필요할 수 있다.
+
+---
+
+## ADR-0030: 자기소개서 초안 생성(AGENT-002) — 승인 PKB 전체 노출(AGENT-001
+## 후보 풀 원칙 의도적 이탈), 문항 공동 분석 단일 호출, 글자수 repair는
+## best-effort 예외, questionId/PKB id 이중 all-or-nothing, 영속화 없음
+
+- 날짜: 2026-08-23
+- 상태: 확정
+- 관련 Task: AGENT-002
+
+**문제**: AGENT-001(ADR-0029)은 "이 공고에서 무엇을 강조할 것인가"에
+답한다. `docs/PROJECT.md`의 다음 단계는 "실제 자기소개서 문항에 그 전략을
+어떻게 배치하고 초안까지 쓸 것인가"다. 순진하게 설계하면 두 가지 위험이
+있다: (1) 문항을 하나씩 독립적으로 LLM에 던지면 각 호출이 서로의 선택을
+몰라 같은 경험이 여러 문항에 반복 등장한다 — 이는 이번 기능의 핵심 가치
+("여러 문항을 함께 보고 경험 중복을 최소화한다")와 정면으로 충돌한다.
+(2) AGENT-001이 확립한 "MATCH-002 후보 풀만 재사용"(ADR-0029 결정 1)
+원칙을 AGENT-002에도 그대로 적용하면, "협업"/"갈등"/"성장" 같이 직무
+relevance는 낮지만 문항 자체에는 반드시 필요한 경험이 애초에 후보 풀에
+없어 선택 자체가 불가능해진다. 사용자가 설계 조사 단계에서 이 시나리오를
+명시적 acceptance criteria로 지정했다: "AI서비스개발 공고에서 AGENT-001이
+FinSight/RAG 위주로 추천해도, 협업 문항에는 실제 승인된 PKB 안의 협업
+경험을 선택할 수 있어야 한다. 억지로 AGENT-001 후보만 고집하면 FAIL."
+
+**결정**:
+
+1. **승인 PKB 전체를 후보로 노출한다 — ADR-0029 결정 1(후보 풀만 재사용)을
+   AGENT-002에서는 의도적으로 깬다.** `ApplicationDraftService`는
+   `AgentAnalysisService.analyze(jobId)`가 반환한 `recommendedExperiences`
+   등 4개 배열의 id로 후보를 좁히지 않고, `CareerExperienceRepository`/
+   `CertificationRepository`/`EducationRepository`/`AwardRepository`의
+   `findAll()`로 승인 PKB 4종 전체를 재조회해 LLM 입력에 포함한다.
+   AGENT-001의 `recommendedExperiences`/`primaryMessage`/
+   `positioningSummary`/`avoidOrBeCareful`/`gaps`는 프롬프트에 "전략
+   참고 자료"로만 포함될 뿐, 후보를 필터링하는 데는 쓰지 않는다.
+   역할을 명확히 분리한다 — **MATCH-002/AGENT-001 = 직무 relevance
+   우선순위, AGENT-002 = 문항 적합성 + 지원서 전체 구성**. 현재 실측
+   PKB 규모(경험 6~8건/자격 8~11건/학력 4~5건/수상 1건, AGENT-001 리뷰
+   기준)에서는 전체를 프롬프트에 넣어도 크기 문제가 없다(ADR-0028의
+   "PKB가 수백 건으로 커지면 재검토" caveat과 동일 전제를 이어받는다).
+2. **문항 전체를 단일 LLM 호출로 공동 분석한다(Q1→LLM, Q2→LLM 반복
+   호출 금지).** `RawApplicationDraftResult`가 `overallStrategy`와 문항
+   수만큼의 `questionResults[]`를 한 번의 structured output 호출로
+   동시에 반환한다. 문항을 독립 호출로 나누면 각 호출이 서로 다른 문항의
+   선택을 알 수 없어 "경험 중복 최소화"라는 목표를 구조적으로 달성할 수
+   없다. outline과 draft도 별도 2단계 호출로 나누지 않고 같은 호출에서
+   함께 생성해 호출 횟수를 불필요하게 늘리지 않는다.
+3. **AGENT-001은 매 요청마다 내부 서비스로 재호출하고, 결과를 캐싱·영속화
+   하지 않는다.** `ApplicationDraftService`가 `AgentAnalysisService`를
+   Spring bean으로 직접 주입받아 호출한다(Controller→Controller 호출
+   아님, ADR-0029와 동일 패턴). 클라이언트가 AGENT-001 결과를 request
+   body로 넘기게 하는 방식은 채택하지 않는다 — API 계약이 "PKB/공고
+   상태가 바뀌면 항상 최신 전략을 반영한다"는 단순한 불변식을 유지하게
+   한다. 이 결정의 대가로 성공 경로 기준 Anthropic 호출이 요청당 최대
+   3회(semantic match 1 + agent analysis 1 + draft plan 1, 글자수 repair
+   발생 시 4회)가 되고, AGENT-001 실측 63.2~85.7초(ADR-0029 Task 결과)에
+   draft 생성 호출이 더해져 총 응답 시간이 **90~180초, repair 발생 시 그
+   이상**이 될 수 있다 — 사용자가 설계 승인 단계에서 이 latency를 인지한
+   상태로 동기(synchronous) 응답 방식을 명시적으로 선택했다(비동기
+   Job/polling 구조는 이번 Phase에 도입하지 않는다).
+4. **ID 검증은 이중 all-or-nothing(questionId 축 + PKB id 축)이며, 유효
+   집합의 기준이 서로 다르다.** PKB id(`primaryExperienceId`/
+   `supportingExperienceIds`/`certificationIds`/`educationIds`/
+   `awardIds`)의 유효 집합은 이번 요청이 조회한 **승인 PKB 전체**다(결정
+   1과 일관). 어느 문항의 어느 필드에서든 unknown id가 하나라도 있으면
+   응답 전체 실패. `supportingExperienceIds` 등 배열 **내부** 중복은
+   ADR-0029와 동일하게 사소한 이탈로 처리(첫 등장만 유지, dedup, WARN
+   로그, 실패 아님). 서로 다른 **문항 간** 동일 `primaryExperienceId`
+   재사용은 "중복 최소화" 지시를 system prompt 레벨의 소프트 정책으로만
+   두고 런타임 실패 조건으로 강제하지 않는다 — PKB가 작아 정말로 겹칠
+   수밖에 없는 정당한 경우(관련 경험이 1개뿐인데 문항이 2개)까지 실패
+   처리하면 이 기능의 실사용성을 해친다.
+   questionId 축은 별도 규칙이다: request 내 중복 `questionId`는 LLM
+   호출 이전 **400**(입력 정합성 문제). LLM 응답이 request에 없는
+   `questionId`를 반환하거나, request의 어떤 `questionId`에 대한 결과가
+   빠져 있거나, 같은 `questionId`를 결과에서 두 번 반환하면 셋 다
+   **응답 전체 실패(502)** — PKB id 축과 달리 questionId 중복은 dedup
+   대상이 아니라 provider validation failure로 취급한다(문항-결과
+   매칭이 index가 아니라 questionId 기준 Map이므로, 중복 반환은 "어느
+   쪽이 진짜 답인지" 판단할 근거가 없는 구조적 오류이기 때문이다).
+5. **글자수 repair는 최대 1회, 배치, best-effort — "provider 실패 =
+   전체 실패" 원칙의 유일한 의도적 예외다.** `maxLength`가 지정된 문항
+   중 1차 생성 결과가 초과한 것이 있으면, 초과한 문항들만 모아 배치로
+   1회 repair 호출을 보낸다(문항별 개별 재시도 없음 — 호출 횟수 폭발
+   방지). repair 프롬프트는 "새 사실/id/context 추가 금지, 기존 근거로만
+   축약"을 명시한다. repair 후에도 초과하면 재시도하지 않고
+   `limitExceeded=true`로 표시할 뿐 실패시키지 않는다. **repair 호출
+   자체가 provider 에러(timeout 등)로 실패해도 전체 요청은 실패하지
+   않는다** — 1차 draft를 `limitExceeded=true`와 함께 그대로 반환한다.
+   semantic match/agent analysis/1차 draft 호출 실패는 지금까지와 동일하게
+   전체 실패(502, silent fallback 없음, partial 200 없음)이며, 이 비대칭은
+   repair가 필수 정확성 요소가 아니라 best-effort 개선이기 때문에 의도적
+   으로 둔 것이다.
+6. **저장하지 않는다.** `POST` → 계산 → response, 신규 엔티티/테이블/
+   migration 없음. MATCH-001/MATCH-002/AGENT-001이 유지해온 무상태
+   원칙과 일관되고(ADR-0026/ADR-0028), 실제 트래픽/수정 이력 요구가
+   아직 없다.
+7. **문항 개수 상한 10개, timeout은 connect 10초/request 150초를
+   초기값으로 두되 실측 후 재조정 조건부.** `ApplicationDraftRequest
+   .questions`가 10개를 초과하면 400. 150초는 AGENT-001의 60초(§9,
+   ADR-0029)를 그대로 재사용하지 않고(draft 텍스트 생성이라는 더 큰
+   출력 규모), PKB-008.1의 300초(ADR-0027)도 그대로 재사용하지 않는다
+   (작업 성격이 다름) — 대신 PKB-008.1이 120초 추정을 300초로 재조정한
+   선례(ADR-0027)를 반복하지 않기 위해, Task 명세에 "실제 dev DB +
+   Anthropic API E2E로 실측 후 필요시 조정"을 명시적 조건으로 남긴다.
+   repair 호출도 같은 timeout을 재사용한다(별도 3번째 네임스페이스는
+   과도).
+8. **`missingCompanyContext`(boolean, 문항 단위)를 둔다.** ADR-0029
+   시점에 이미 확인된 사실 — `JobPosting`에는 `companyName`/`title`/
+   `careerLevel`/`educationRequirement`/`jobCategory` 외에 회사 사업/
+   문화/인재상을 서술하는 필드가 전혀 없다 — 이 그대로 AGENT-002에도
+   적용된다. 지원동기 문항처럼 기업 정보가 필요한 문항에서 이 근거
+   부족을 문자열 매칭 없이 구조적으로 드러내기 위한 필드다. system
+   prompt는 이 5개 필드 외의 회사 정보를 절대 추측하지 말라고 명시한다.
+
+**대안**:
+- **AGENT-002도 AGENT-001 추천 후보 풀만 사용** — 기각(§29 acceptance
+  criteria와 정면 충돌). 직무 relevance와 문항 적합성이라는 서로 다른
+  두 질문을 하나의 후보 풀 제한으로 뭉뚱그리면, relevance가 낮지만
+  문항에 반드시 필요한 경험(협업/갈등/성장 등)을 구조적으로 선택할 수
+  없게 된다.
+- **문항별 독립 LLM 호출(Q1→LLM, Q2→LLM, ...)** — 기각. 각 호출이 서로의
+  선택 결과를 모르므로 경험 중복을 사후에 조정하는 별도 조율 단계가
+  필요해지고, 이는 오히려 구조를 더 복잡하게 만들며 "공동 분석"이라는
+  핵심 가치를 우회하는 셈이 된다.
+- **클라이언트가 AGENT-001 결과를 request body로 전달** — 기각(사용자
+  요구사항에서 명시적으로 배제). PKB/공고가 바뀌어도 클라이언트가 오래된
+  전략을 계속 재사용할 위험이 생기고, "전략 산출은 항상 서버가 최신
+  상태로 계산한다"는 기존 API들의 불변식과 어긋난다.
+- **AGENT-001 결과 persistence/cache 도입** — 기각(이번 범위 과함). 이번
+  Phase에서 캐시 무효화 정책(공고/PKB 변경 시 언제 무효화할지)까지
+  설계하는 것은 과도하다. latency가 실사용에서 실제로 문제가 되면 별도
+  Task로 재검토한다.
+- **글자수 초과를 validation failure로 처리(설계안 A)** — 기각. 사용자가
+  실제 제출에 쓸 초안을 만드는 기능에서, 근거는 정확한데 글자수만 살짝
+  넘었다는 이유로 전체를 실패시키는 것은 사용성을 심하게 해친다.
+- **글자수 초과를 그대로 반환만 하고 repair 없음(설계안 C)** — 기각(이번
+  시점). repair 1회·배치·best-effort 정책의 복잡도가 과도하지 않다고
+  판단해 설계안 B를 선택했다. 구현 중 실제로 repair 로직이 예상보다
+  복잡해지면(예: repair 프롬프트가 hallucination을 유발) 이 결정을
+  재검토하고 C로 후퇴할 수 있다.
+- **questionId 중복 반환도 PKB id처럼 dedup 처리(첫 등장 유지)** — 기각.
+  PKB id 중복은 "같은 사실을 두 번 언급"이라는 사소한 이탈이지만,
+  questionId 중복은 "이 문항에 대한 답이 두 개 존재하는데 어느 쪽이
+  진짜인지 구조적으로 알 수 없다"는 다른 성격의 문제라 사용자 요구사항이
+  명시적으로 "provider validation failure"를 요구했다.
+- **비동기 Job(202 + polling) 구조 도입** — 기각(이번 Phase). AGENT-001이
+  이미 60~86초 동기 응답을 실사용 가능한 선례로 남겼고, 현재 인프라에
+  Job 상태 저장소가 없다. 사용자가 latency를 인지한 채로 동기 방식을
+  명시적으로 선택했다. 실사용에서 타임아웃/이탈이 실제로 문제가 되면
+  별도 Task로 도입을 재검토한다.
+
+**이유**: 이 결정을 관통하는 원칙은 ADR-0029와 동일하되 경계가 다르다 —
+"각 LLM 호출/서비스는 정확히 하나의 질문에만 답한다"는 원칙 아래
+MATCH-002/AGENT-001은 "무엇이 직무와 관련 있고 무엇을 강조할지"를,
+AGENT-002는 "실제 문항에 무엇을 어떻게 배치하고 쓸지"를 답한다. 이
+경계를 지키려면 AGENT-002는 AGENT-001이 좁혀놓은 후보에 갇히지 않고
+승인 PKB 전체를 볼 수 있어야 한다. hallucination 방지(ID 기반
+all-or-nothing, 실제 PKB 원본을 사실 source로 재조회)와 "AI가 사용자가
+하지 않은 경험/수치를 만들어내지 못하게 막는다"(AGENTS.md)는 원칙은
+AGENT-001과 동일하게 유지하되, 이번엔 questionId라는 두 번째 축의
+정합성까지 함께 지켜야 하는 것이 새로운 지점이다.
+
+**영향**: `ApplicationDraftService`는 `career/*` 4개 Repository의
+`findAll()`을 직접 호출하는 첫 사례가 된다(MATCH-002/AGENT-001은 모두
+좁혀진 id 목록으로 `findAllById`만 호출했다) — PKB 규모가 수백 건으로
+커지면 이 전체 조회와 프롬프트 크기를 재검토해야 한다. AGENT-001을 매
+요청 재호출하므로 `careerops.semantic-match.*`/`careerops.agent-analysis.*`
+지표가 AGENT-002 호출로도 함께 증가하는 것이 의도된 연쇄다(ADR-0029와
+동일 원칙, `docs/METRICS.md`에 명시). `application-draft` timeout
+150초는 확정값이 아니라 실측 후 조정 대상이라는 조건이 Task 명세에
+남으므로, E2E 검증 단계에서 실제 소요 시간을 반드시 기록해야 한다.
+글자수 repair의 best-effort 예외는 "provider 실패 = 항상 전체 실패"라는
+지금까지의 단순한 규칙에 처음으로 예외를 만든다 — 향후 다른 기능에서
+유사한 best-effort 후처리 단계를 추가할 때 이 비대칭을 참고 선례로 삼을
+수 있다.
