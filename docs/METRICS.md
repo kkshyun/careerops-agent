@@ -224,6 +224,27 @@ MATCH-002/AGENT-001/AGENT-002와 달리 이 API는 공고 1건이 아니라 OPEN
 관찰하는 용도로도 쓰인다(ADR-0031 결정 1). 실제 E2E 실측: candidates=420,
 returned=5, duration≈47.6초(2026-08-24, dev DB).
 
+**채용공고 추천 알림 준비 (NOTIFY-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_notification_job_recommendation_request_total` | `careerops.notification.job-recommendation.request` | Counter | `result`=`success`\|`pkb_empty`\|`provider_error`\|`validation_failed` | prepare 요청 결과 분포(RECOMMEND-001 내부 호출 결과 taxonomy를 그대로 승계) | `NotificationPreparationService` |
+| `careerops_notification_job_recommendation_duration_seconds` | `careerops.notification.job-recommendation.duration` | Timer | 없음 | RECOMMEND 내부 호출+dedupe+저장을 포함한 전체 처리 시간 | `NotificationPreparationService` |
+| `careerops_notification_job_recommendation` | `careerops.notification.job-recommendation.created` | DistributionSummary | 없음 | 요청당 새로 생성된 PENDING notification 수 분포 | `NotificationPreparationService` |
+| `careerops_notification_job_recommendation_skipped` | `careerops.notification.job-recommendation.skipped` | DistributionSummary | 없음 | 요청당 이미 알림됨/CLOSED로 skip된 수 분포 | `NotificationPreparationService` |
+
+이 API 호출로 `careerops.recommendation.*`(RECOMMEND-001)도 자연히 함께
+증가하는 것이 의도된 연쇄다(`NotificationPreparationService`가
+`JobRecommendationService.recommend(20)`을 직접 재사용하므로, ADR-0032
+결정 1). 실제 E2E 실측(2026-08-24, dev DB): 최초 prepare
+candidates≈461, created=5, duration≈65~68초 — RECOMMEND-001 자체가
+대규모 candidate(450건 이상)에서 `MALFORMED_RESPONSE`/`UNKNOWN_JOB_ID`/
+`NETWORK_TIMEOUT`으로 간헐적으로 실패하는 사례를 함께 관찰했다(재시도
+시 성공, NOTIFY-001 코드 문제 아님 — RECOMMEND-001 자체의 provider
+안정성 이슈로 별도 관찰 필요). 재요청 시 이미 알림된 jobId는
+`alreadyNotifiedCount`로만 반영되고 재생성되지 않음을 실측 확인했고,
+backend 재시작 후에도 저장된 row가 그대로 유지됨을 확인했다.
+
 ### 예정 (미구현, 관련 기능 Task에서 정의)
 
 - 중복 공고 제거율

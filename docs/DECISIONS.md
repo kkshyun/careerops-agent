@@ -2564,3 +2564,178 @@ all-or-nothing 검증(결정 6)과 서버가 title/company/deadline을 DB에서
 구분한다. Persistence를 두지 않기로 한 결정은 NOTIFY-001이 "이미
 알림 보낸 공고" 판단을 위한 이력 저장을 처음부터 새로 설계해야 함을
 의미한다.
+
+---
+
+## ADR-0032: 채용공고 추천 알림 준비(NOTIFY-001) — 전용 entity, LLM 호출
+## 위에 추가 트랜잭션 금지, `job_posting_id` UNIQUE 기반 dedupe(`ON
+## CONFLICT` 재기각), unseen pool 순차 소진, score/reason만 snapshot
+
+- 날짜: 2026-08-24
+- 상태: 확정
+- 관련 Task: NOTIFY-001
+
+**문제**: RECOMMEND-001(ADR-0031)은 OPEN JobPosting 전체를 candidate로
+Claude 1회 호출로 batch ranking하지만 결과를 저장하지 않는다(on-demand
+계산, 무상태). 실제 E2E에서 47~76초가 걸린다. 저장이 없으므로 수집→추천→
+알림을 반복 자동화하면 "이 공고를 이미 사용자에게 알려줬는가?"를 판단할
+방법이 없다 — 매 호출마다 이미 알린 공고를 다시 알림 대상으로 만들거나,
+알림 이력 자체를 추적할 수 없다.
+
+설계 중 중요한 사실을 발견했다: `JobRecommendationService.recommend()`는
+이미 `@Transactional(readOnly=true)`이고, 그 안에서 Anthropic 호출(실측
+47~76초)이 그대로 실행된다 — 즉 RECOMMEND-001은 이미 그 시간 동안 DB
+커넥션을 하나 점유한 채로 LLM 응답을 기다린다. 이는 AGENT-002/RECOMMEND-001
+리뷰가 관찰한 "산발적 DB 커넥션 풀 경합 flake"의 더 직접적인 원인
+후보다. RECOMMEND-001 코드 변경은 이번 Task 범위 밖이므로, NOTIFY-001은
+이 기존 커넥션 점유를 없앨 수 없다 — 대신 그 위에 **추가** 트랜잭션을
+쌓지 않는 것으로 문제를 더 키우지 않는 쪽을 택했다.
+
+**결정**:
+
+1. **`NotificationPreparationService`는 `JobRecommendationService` 빈을
+   생성자 주입받아 직접 메서드 호출한다(`recommend(20)`). HTTP로
+   `/api/jobs/recommendations`를 다시 호출하지 않는다.** Controller→
+   Controller HTTP 재호출 금지 원칙(AGENT-001/AGENT-002가 이미 지켜온
+   "Service→Service 내부 재사용" 패턴, ADR-0029/ADR-0030과 동일)을
+   그대로 따른다. `recommend()`는 always `limit=20`(RECOMMEND-001의
+   max)으로 고정 호출해 가능한 넓은 unseen pool을 확보한다 — 이 값은
+   NOTIFY 쪽 `limit` 파라미터(아래 결정 7)와 별개다.
+2. **`NotificationPreparationService.prepare()`를 감싸는
+   `@Transactional`을 두지 않는다.** 3단계로 명확히 분리한다: (1)
+   `recommend(20)` 호출 — RECOMMEND-001 자신의 트랜잭션은 그 내부에서
+   독립적으로 열리고 닫히며 NOTIFY 쪽이 이를 감싸지 않는다, (2) 반환된
+   최대 20건을 메모리에서 가공(dedupe pre-check, OPEN 재확인 — 각각
+   배치 1쿼리, 밀리초 수준의 개별 트랜잭션), (3) 최종 후보를 **행마다
+   독립적으로** `save()`한다. 이렇게 하면 47~76초짜리 LLM 대기와 DB
+   쓰기가 하나의 트랜잭션으로 묶이는 최악의 경우(커넥션을 분 단위로
+   점유)를 원천적으로 만들지 않는다.
+3. **전용 `JobRecommendationNotification` entity를 신설한다(generic
+   `Notification` 추상화를 만들지 않는다).** 이 프로젝트의 `JobApplication`/
+   `ApplicationStage`/`ImportCandidate`는 전부 도메인별 전용 entity이고,
+   `type`/nullable FK/JSON payload로 여러 알림 종류를 한 테이블에 담는
+   generic 패턴의 선례가 전혀 없다. NOTIFY-002(마감/전형 알림)가 실제로
+   설계되는 시점에는 dedupe key 자체가 다를 가능성이 높다(예: `(job_application_id,
+   reminder_type)` 복합 키 — `JobPosting` 단일 FK가 아님) — 지금 두
+   알림 종류의 공통점을 추측해 미리 통합하면 두 요구가 실제로 갈릴 때
+   더 큰 리팩터링 비용이 든다. ADR-0026 결정 5/ADR-0031 결정 5와 같은
+   YAGNI 원칙을 entity 설계에도 동일하게 적용했다.
+4. **dedupe key는 `job_posting_id` 단일 컬럼이고, DB에
+   `UNIQUE(job_posting_id)` 제약을 반드시 둔다.** 애플리케이션 레벨
+   `existsByJobPostingId()` 사전 체크만으로는 동시 요청 레이스를 막을
+   수 없다(두 요청이 동시에 체크를 통과하고 둘 다 INSERT를 시도할 수
+   있음) — 최종 정합성은 DB constraint로 보장한다. 정확히
+   `job_applications.uk_job_applications_job_posting_id UNIQUE
+   (job_posting_id)`(V5 migration)와 같은 스타일을 재사용한다.
+5. **`ON CONFLICT DO NOTHING` 같은 native SQL을 다시 검토했으나
+   기각한다 — COLLECT-006에서 이미 같은 대안을 검토·기각한 이유가
+   그대로 적용된다.** native insert 경로에서는 `@CreationTimestamp`
+   콜백이 동작하지 않고, 결과 row 재조회가 어차피 필요해 왕복이
+   줄어들지도 않는다. 대신 `JobApplicationService.create()`가 이미
+   쓰는 패턴 — `existsByJobPostingId()` 사전 체크(대부분의 경우 불필요한
+   INSERT 시도를 줄임) + `save()`를 개별 `try/catch(DataIntegrityViolationException)`로
+   감싸 레이스로 인한 잔여 위반만 "이미 알림됨"으로 재분류 — 를 그대로
+   재사용한다. Postgres는 트랜잭션 안에서 한 statement가 실패하면
+   트랜잭션 전체가 aborted 상태가 되므로(COLLECT-006에서 이미 확인된
+   제약), 이 catch는 반드시 row별 독립 트랜잭션(결정 2) 안에서만
+   유효하다 — 여러 INSERT를 하나의 트랜잭션으로 묶으면 이 패턴 자체가
+   깨진다.
+6. **snapshot은 `recommendationScore`/`reason`만 저장하고,
+   `companyName`/`title`/`applicationEndAt`은 저장하지 않고 `JobPosting`
+   FK로 응답 시점에 재조회한다.** `JobApplicationRepository.search()`가
+   이미 `JOIN a.jobPosting p`로 매번 재조회하는 동일 패턴을 쓰고
+   있다. reason은 `JobRecommendationService`가 이미 응답 단계에서
+   200자로 truncate하지만(RECOMMEND-001 review-1/2에서 실측 확인),
+   저장 직전에도 방어적으로 재truncate해 컬럼 크기 초과로 인한 DB
+   에러를 원천 차단한다. matched PKB IDs(`careerExperienceIds` 등)는
+   이번엔 저장하지 않는다 — KAKAO 메시지 본문에 실제로 "관련 경험: X"
+   같은 표시가 필요하다고 확인되기 전까지 JSON/join table을 미리
+   추가하지 않는다(YAGNI, 결정 3과 같은 원칙).
+7. **`NotificationStatus`는 `PENDING/SENT/FAILED` 3-state enum을 지금
+   정의하되, 이번 Task의 production 경로는 PENDING만 생성한다.**
+   `ImportCandidateStatus`가 이미 `@Enumerated(EnumType.STRING)` +
+   `@Column(length=20)`으로 3-state를 정의해둔 선례가 있고, `VARCHAR`
+   컬럼은 enum 값이 늘어나도 migration이 필요 없어 지금 다 정의해도
+   비용이 거의 없다. 다만 `sent_at`/재시도 횟수/에러 사유 등 SENT/FAILED
+   전이에 실제로 필요한 컬럼과 `updateStatus()` 같은 전이 메서드는
+   이번 migration/entity에 추가하지 않는다 — KAKAO-001이 실제로 무엇이
+   필요한지(카카오 메시지 id? 에러 메시지 원문?) 확정된 뒤 그때
+   추가하는 것이 더 정확하다.
+8. **prepare API의 `limit`은 "이번 요청에서 새로 생성할 notification
+   최대 개수"로 정의한다(RECOMMEND-001의 `limit`과 의미가 다름).**
+   `POST /api/notifications/job-recommendations?limit=5`가 내부적으로
+   항상 `recommend(20)`을 호출한 뒤, 이미 알림된 jobId를 skip하며 score
+   내림차순 순서로 최대 `limit`개까지만 새로 생성한다. unseen이
+   `limit`보다 적으면 있는 만큼만 생성하고 강제로 채우지 않는다.
+9. **already-notified를 skip한 뒤에도 Top20 pool에서 다음 unseen까지
+   순차적으로 채운다("현재 Top5에 새로 진입한 공고만"이 아니다).**
+   대안(Top5 진입분만 알림)은 Top5 밖에 머무르는 관련 공고를 영원히
+   알리지 못하는 문제가 있다 — "관련 있는 공고를 후보 단계에서 놓치지
+   않는다"는 ADR-0026/ADR-0031이 이미 일관되게 지켜온 원칙과 정면으로
+   충돌한다. 순차 소진 방식은 매 회차 호출마다 Top20 pool에서 자연스럽게
+   다음 unseen 묶음을 긁어오므로 이 원칙을 그대로 계승한다.
+10. **insert 직전 `JobPosting.status`를 배치로 재조회해 `"OPEN"`이
+    아니면 해당 건은 생성하지 않는다.** RECOMMEND 호출 시점엔 OPEN이었어도
+    insert 시점엔 CLOSED로 바뀌었을 수 있다(수십 초의 LLM 대기 시간
+    동안). 과도한 locking 없이 단순 배치 재조회 1회로 충분하다고
+    판단했다 — race를 완전히 제거하려는 시도(예: 비관적 락)는 이번
+    MVP 규모에 비해 과하다.
+11. **`GET /api/notifications/job-recommendations?status=PENDING`
+    (status optional, `@PageableDefault(size=20) Pageable`)을 이번
+    Task에 포함한다.** `JobPostingController`의 pagination 컨벤션과
+    `JobApplicationListResponse`(content/totalElements/totalPages/page/
+    size) 패턴을 그대로 재사용해 구현 비용이 낮고, 개발 중 persistence
+    확인과 KAKAO-001의 조회 계약을 미리 명확히 하는 실질적 근거가
+    있다. 단건 조회(`GET /{id}`)는 KAKAO-001이 배치로 PENDING을
+    조회해 처리할 가능성이 높아 이번엔 생략한다.
+12. **별도 `CREATE INDEX`를 추가하지 않는다.** `UNIQUE(job_posting_id)`
+    제약이 자동으로 btree index를 만들어 dedupe 조회를 이미 커버한다.
+    `(status, created_at)` 복합 index는 후보로 검토했으나, 현재 규모
+    (요청당 최대 20건 삽입, 조회도 KAKAO-001 전까지는 개발 확인 목적)에서
+    이 index로 해결할 실측 성능 문제가 없다 — "불필요한 index 추가
+    금지" 원칙에 따라 KAKAO-001이 실제 polling 패턴을 확정한 뒤 필요성을
+    재판단한다.
+
+**대안**:
+- **Generic `Notification`(type/nullable FK/payload) entity** — 기각
+  (결정 3). 이 프로젝트에 선례가 없고, NOTIFY-002의 실제 요구가
+  확정되기 전에 미리 통합하면 두 요구가 갈릴 때 더 큰 비용이 든다.
+- **`ON CONFLICT DO NOTHING` native SQL insert** — 기각(결정 5).
+  COLLECT-006과 동일한 이유(`@CreationTimestamp` 미동작, 왕복 절감
+  효과 없음)로 재확인.
+- **prepare 전체를 하나의 `@Transactional`로 묶어 원자적으로 처리** —
+  기각(결정 2). RECOMMEND-001의 47~76초 LLM 대기를 트랜잭션에 포함시키면
+  DB 커넥션을 분 단위로 점유하게 되어, 이미 관찰된 커넥션 풀 경합
+  문제를 악화시킨다. Notification 생성은 dedupe key가 있어 멱등이므로,
+  일부만 커밋되고 나머지가 실패해도 다음 prepare 호출이 안전하게
+  이어서 처리할 수 있다 — 원자성을 포기해도 안전하다.
+- **"현재 Top5에 새로 진입한 공고만" 알림** — 기각(결정 9). Top5 밖에
+  머무르는 관련 공고를 영원히 알리지 못하는 구조적 결함이 있다.
+- **matched PKB IDs를 JSON/join table로 저장** — 기각(결정 6과 같은
+  이유). 실제 필요성이 확인되기 전까지 미리 만들지 않는다.
+- **SENT/FAILED 전이에 필요한 컬럼(`sent_at` 등)을 지금 미리 추가** —
+  기각(결정 7). KAKAO-001이 실제로 무엇을 저장해야 하는지 알기 전에
+  스키마를 먼저 확정하면 다시 바꿔야 할 위험이 있다.
+
+**이유**: 이 결정 전체를 관통하는 원칙은 두 가지다. 첫째, "외부 API
+대기 시간 동안 DB connection/transaction을 점유하지 않는다" — 이미
+관찰된 DB 커넥션 풀 경합 flake의 실제 근본 원인(RECOMMEND-001 자신의
+장기 읽기 트랜잭션)을 이번 조사로 처음 명확히 특정했고, NOTIFY-001은
+이 위에 쓰기 트랜잭션까지 얹어 문제를 악화시키지 않는 것을 최우선
+설계 제약으로 삼았다. 둘째, "관련 있는 공고를 후보 단계에서 놓치지
+않는다"(ADR-0026 이후 일관된 원칙) — unseen pool 순차 소진 방식(결정
+9)과 OPEN 재확인(결정 10)에도 이 원칙을 동일하게 적용했다. YAGNI
+원칙(entity 설계, matched PKB IDs, SENT/FAILED 컬럼)은 ADR-0026 결정
+5/ADR-0031 결정 5의 연장선이다.
+
+**영향**: `job_recommendation_notifications` 테이블이 이 프로젝트에서
+"LLM 호출을 포함한 기존 서비스를 재사용하되 그 위에 쓰기 트랜잭션을
+얹지 않는" 첫 사례가 된다 — 향후 유사한 "무거운 계산 서비스 재사용 +
+경량 persistence" 패턴에 이번 3단계 경계 설계가 선례로 참고될 수 있다.
+`RecommendationScore`/`reason`이 snapshot이므로, 이후 PKB가 바뀌거나
+RECOMMEND-001의 랭킹 로직이 바뀌어도 이미 생성된 notification의 값은
+갱신되지 않는다 — 이는 의도된 것이지만, "알림에 표시된 점수/사유가
+현재 재계산 결과와 다를 수 있다"는 사실을 KAKAO-001과 향후 UI가
+인지해야 한다. `NotificationStatus`에 SENT/FAILED 값이 이미 존재하므로
+KAKAO-001은 새 enum을 만들지 않고 값만 사용하게 되지만, 그 전이에
+필요한 컬럼은 KAKAO-001이 새 migration으로 추가해야 한다.
