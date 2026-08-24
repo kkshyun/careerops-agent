@@ -7,8 +7,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 import java.util.Optional;
+import java.util.List;
 
 public interface JobPostingRepository extends JpaRepository<JobPosting, Long> {
+    List<JobPosting> findAllByStatus(String status);
     Optional<JobPosting> findFirstBySourceAndExternalId(String source, String externalId);
 
     long countBySourceAndExternalId(String source, String externalId);

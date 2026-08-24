@@ -33,6 +33,9 @@ careerops:
     agent:
       connect-timeout-seconds: 10
       request-timeout-seconds: 60
+    recommendation:
+      connect-timeout-seconds: 10
+      request-timeout-seconds: 90
     application-draft:
       connect-timeout-seconds: 10
       request-timeout-seconds: 150

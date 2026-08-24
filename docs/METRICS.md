@@ -209,6 +209,21 @@ JOB-001/COLLECT-001이 유지해온 "공통 예외 처리 계층을 만들지 �
 label로 만들 때 발생하는 높은 cardinality를 피하면서 요청 결과, 지연,
 관련도 분포만 관찰한다.
 
+**다건 채용공고 추천 (RECOMMEND-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_recommendation_request_total` | `careerops.recommendation.request` | Counter | `result`=`success`\|`pkb_empty`\|`provider_error`\|`validation_failed` | 추천 요청 결과 분포 | `JobRecommendationService` |
+| `careerops_recommendation_duration_seconds` | `careerops.recommendation.duration` | Timer | 없음 | candidate 조회+단일 Anthropic 호출+검증+정렬을 포함한 전체 처리 시간 | `JobRecommendationService` |
+| `careerops_recommendation_candidates` | `careerops.recommendation.candidates` | DistributionSummary | 없음 | 요청당 candidate(OPEN JobPosting 전체, cap 없음) 수 분포 | `JobRecommendationService` |
+| `careerops_recommendation_returned` | `careerops.recommendation.returned` | DistributionSummary | 없음 | 요청당 실제 반환된 추천 수 분포(limit 이하) | `JobRecommendationService` |
+
+MATCH-002/AGENT-001/AGENT-002와 달리 이 API는 공고 1건이 아니라 OPEN
+전체를 candidate로 다루므로, `careerops_recommendation_candidates`는
+후보 규모가 실제로 cap 없이 반영되는지(mechanical truncate가 없는지)
+관찰하는 용도로도 쓰인다(ADR-0031 결정 1). 실제 E2E 실측: candidates=420,
+returned=5, duration≈47.6초(2026-08-24, dev DB).
+
 ### 예정 (미구현, 관련 기능 Task에서 정의)
 
 - 중복 공고 제거율

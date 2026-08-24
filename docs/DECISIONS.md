@@ -2395,3 +2395,172 @@ AGENT-001과 동일하게 유지하되, 이번엔 questionId라는 두 번째 �
 지금까지의 단순한 규칙에 처음으로 예외를 만든다 — 향후 다른 기능에서
 유사한 best-effort 후처리 단계를 추가할 때 이 비대칭을 참고 선례로 삼을
 수 있다.
+
+---
+
+## ADR-0031: 다건 채용공고 추천(RECOMMEND-001) — Batch Semantic Ranking
+## 단일 호출, OPEN 전체 cap 없이 candidate화, MATCH-001 hard filter 금지
+## 재확인, matchedThemes 미도입, recommendationScore는 semanticScore와
+## 별개 척도
+
+- 날짜: 2026-08-24
+- 상태: 확정
+- 관련 Task: RECOMMEND-001
+
+**문제**: MATCH-001(ADR-0026)/MATCH-002(ADR-0028)/AGENT-001(ADR-0029)/
+AGENT-002(ADR-0030)는 모두 "공고 1건"을 전제로 설계됐다. 실측 latency는
+MATCH-002 수십 초(공고당 Anthropic 1회), AGENT-001 63~86초(2회),
+AGENT-002 최대 356초(3~4회)다. `docs/ROADMAP.md`의 다음 단계는 "여러
+공고 중 지금 먼저 볼 공고를 어떻게 추릴 것인가"인데, 이 기존 구조를 공고
+N건에 그대로 반복 적용하면(N번 공고 → N번 Anthropic 호출) 비용/latency가
+자동 추천에 쓸 수 없는 수준이 된다 — 예를 들어 실측 OPEN 420건에 MATCH-002를
+반복하면 순차 기준 최소 2.9시간이 걸린다. 반대로 "MATCH-001 점수로 먼저
+후보를 좁힌 뒤 상위만 MATCH-002를 돌리자"는 직관적인 대안은
+VALIDATE-001/ADR-0026에서 이미 반증됐다 — 실제 PKB(Java/Spring/AI/RAG
+프로필)로 "한국교통안전공단 AI서비스개발", "한전KDN AI 로봇플랫폼"
+(둘 다 jobCategory="정보통신")이 MATCH-001 `overallScore=0.0`으로 나오는
+반면, "연구"라는 우연한 substring 때문에 무관한 공고가 0.42로 높게 나온
+사례가 실측으로 확인되어 있다. 즉 MATCH-001은 이 두 공고를 candidate
+풀에서 아예 제거해버리는 false negative를 실제로 일으킨다.
+
+**결정**:
+
+1. **candidate는 `status='OPEN'` 전체를 cap 없이 사용한다 (mechanical
+   truncate 없음).** 조사 시점 실측 OPEN 420건, compact 표현 기준 예상
+   input token은 약 45,000~60,000 수준으로 Claude Sonnet 5 context
+   window 안에 여유 있게 들어간다. "50건 초과 시 마감 임박순 truncate"
+   같은 mechanical cap도 검토했으나, relevance 판단이 개입하지 않는
+   기계적 기준이라도 실질적으로 후보의 상당수(약 370건)를 이번 요청에서
+   원천 배제하는 recall 손실이 생긴다. 결정 3(MATCH-001 hard filter
+   금지)과 같은 원칙 — "관련 있는 공고를 후보 단계에서 놓치지 않는다" —
+   을 candidate 크기 문제에도 동일하게 적용해 cap을 두지 않는 쪽을
+   택했다. candidate 규모가 향후 수천 건으로 커져 이 가정이 깨지면(예:
+   OPEN 공고가 수천 건이 되어 token/latency가 실측으로 문제가 되면)
+   그때 chunk/broad-prefilter를 재검토한다 — 이번 Task 범위에서는
+   미리 만들지 않는다.
+2. **Batch Semantic Ranking: candidate 전체 + compact PKB profile을
+   Claude 구조화 출력 1회로 처리한다.** "공고마다 MATCH-002 반복 호출"
+   (결정 문제의 근거로 기각)과 "MATCH-001 hard filter 후 상위만
+   MATCH-002"(같은 이유로 기각) 대신, N건이든 항상 Anthropic 호출
+   1회로 고정되는 구조를 택한다. 이는 AGENT-002(최대 3~4회 연쇄 호출)
+   보다도 단순하다.
+3. **compact PKB/JobPosting 표현을 쓰되, PKB는 detail/bullets를
+   제외하고 JobPosting은 실제 존재가 확인된 필드만 포함한다.** PKB
+   실측 규모(CareerExperience 6 / Certification 10 / Education 2 /
+   Award 1)는 candidate 420건 대비 프롬프트 크기에 거의 영향을 주지
+   않으므로 과도한 축약보다 signal 유지를 우선했다 — CareerExperience는
+   id/title/organization/role/summary/tags까지 포함하고 detail/bullets만
+   제외한다(AGENT-001/AGENT-002만큼 상세할 필요는 없는 coarse ranking
+   목적이며, summary가 이미 요약 정보를 담고 있다). JobPosting은
+   id/companyName/title/jobCategory/careerLevel/educationRequirement/
+   applicationEndAt만 포함한다 — location/employmentType은 MATCH-002/
+   AGENT-001도 프롬프트에서 제외했던 필드라 이번에도 배제했고, status는
+   candidate가 이미 전부 OPEN이라 불필요하다.
+4. **`recommendationScore`는 MATCH-002의 `semanticScore`와 이름과
+   의미를 모두 분리한다.** `recommendationScore`는 "이 candidate 집합
+   안에서 이 공고를 우선 검토할 가치가 있는 상대적 정도"이고,
+   `semanticScore`는 "이 공고 1건에 대한 심층 관련도"다. 계산 맥락
+   (수백 건을 한 번에 상대 비교 vs 단일 공고를 깊게 판단)이 다르므로
+   같은 척도라고 가정하지 않는다. 두 값 다 "합격 가능성/서류 통과
+   가능성/취업 성공 확률"을 의미하지 않는다는 원칙(ADR-0026/ADR-0028과
+   동일)도 그대로 유지한다.
+5. **`matchedThemes` 같은 고정 taxonomy 필드는 도입하지 않는다.**
+   `reason` + matched PKB id 목록(careerExperienceIds/certificationIds/
+   educationIds/awardIds)만으로 추천 근거를 충분히 전달할 수 있다고
+   판단했다. ADR-0026 결정 5("하드코딩된 세밀한 기술 동의어/도메인
+   taxonomy 사전을 두지 않는다")와 같은 원칙 — 닫힌 목록은 그 목록에
+   없는 관련성을 구조적으로 놓치고, 유지보수 부담만 늘린다 — 을 이번
+   theme taxonomy 문제에도 동일하게 적용했다.
+6. **ID 검증은 MATCH-002 컨벤션을 그대로 따른다: 반환된 jobId 및 PKB
+   id가 이번 요청 input 집합 밖이면 응답 전체 실패, 중복 jobId는
+   최고 score만 유지, score가 [0.0, 1.0] 범위를 벗어나면 clamp 없이
+   전체 실패.** AGENT-001/AGENT-002가 "배열 순서 유지"로 tie-break한
+   것은 그 LLM들이 score를 만들지 않기 때문에 나온 대안일 뿐이다.
+   RECOMMEND-001은 LLM이 score를 직접 생성하므로, 이미 검증된
+   MATCH-002의 "최고 score 유지" 패턴을 그대로 재사용하는 것이 더
+   단순하고 새로운 tie-break 규칙을 만들 필요가 없다.
+7. **LLM이 반환한 배열 순서를 신뢰하지 않고, 서버가
+   `recommendationScore` 내림차순(동점 시 jobId 오름차순)으로
+   재정렬한 뒤 Top N을 truncate한다.** MATCH-001/MATCH-002의 정렬
+   컨벤션과 동일 — LLM이 score를 만드는 이상 순서까지 LLM에 맡길
+   이유가 없고, "score와 배열 순서가 불일치하면 어느 쪽이 맞는가"라는
+   모호함을 원천적으로 없앤다.
+8. **API는 `POST /api/jobs/recommendations?limit=5`(query param, 기본
+   5, 최대 20, 범위 밖은 400)로 신설한다.** 기존
+   `/api/jobs/{jobId}/match|semantic-match|agent-analysis`와 같은
+   `job` 네임스페이스 아래 두되, `{jobId}` 경로 변수 없이 컬렉션
+   레벨 액션으로 둔다 — 이 프로젝트에 "여러 공고를 한 번에 다루는"
+   API 선례가 아직 없어 새 최상위 리소스(`/api/recommendations`)를
+   만들기보다, 기존 네임스페이스 안에서 가장 단순하게 확장했다.
+9. **승인 PKB 4종이 전부 0건이면 200+빈 배열이 아니라 409를 반환하고
+   LLM을 호출하지 않는다.** AGENT-001(ADR-0029 결정 6)과 동일 판단 —
+   "여러 공고 중 우선순위를 매긴다"는 이 Task의 질문도 강조/추천할
+   PKB 근거가 하나도 없으면 성립하지 않는다. MATCH-002가 PKB empty를
+   `score=0.0`인 200으로 처리한 것은 "계산할 것이 없다"는 사실 자체가
+   유효한 단일 공고 답이기 때문이며, 여러 공고를 골라내야 하는
+   RECOMMEND-001의 성격은 AGENT-001에 더 가깝다고 판단했다.
+10. **전용 timeout 네임스페이스(`careerops.ai.recommendation.*`,
+    connect 10초/request 90초)를 신설하고 기존 값을 재사용하지
+    않는다.** MATCH-002(45초)/AGENT-001(60초)/AGENT-002(150초) 전부
+    "입력이 작고 출력도 작은" 또는 "입력이 작고 출력이 큰" 조합인
+    반면, RECOMMEND-001은 **입력이 매우 크고(candidate 420건) 출력은
+    작은(Top N ≤ 20개 짧은 항목)** 지금까지 없던 조합이라 기존 어떤
+    값도 근거가 되지 않는다. 90초는 사용자가 제시한 범위(60~90초)의
+    상단을 초기값으로 채택했고, PKB-008.1(120초 추정 → 실측 후 300초로
+    재조정)과 같은 조건 — 확정값이 아니라 실제 E2E 실측 후 조정
+    대상 — 을 그대로 적용한다.
+11. **Persistence를 추가하지 않는다 (on-demand response만, migration
+    없음).** "이미 알림한 공고인지" 판단은 NOTIFY-001이 이력 저장을
+    필요로 할 때 별도로 설계한다 — 이번 Task에서 미리 만들면 실제
+    NOTIFY-001 요구사항과 맞지 않는 스키마를 먼저 확정해버릴 위험이
+    있다. 같은 이유로 "최근 신규 공고만 추천"(B안)도 이번 범위에
+    넣지 않는다 — reliable한 "마지막 추천/알림 시점" 필드가 아직
+    없고, 이를 만들려면 결국 persistence가 필요해 이번 결정과
+    충돌한다.
+
+**대안**:
+- **공고마다 MATCH-002 반복 호출** — 기각. 위 문제 정의 근거(순차 기준
+  최소 2.9시간)로 자동 추천에 쓸 수 없다.
+- **MATCH-001 score로 hard filter 후 상위만 MATCH-002** — 기각.
+  VALIDATE-001/ADR-0026에서 실측된 false negative(정보통신 공고
+  0.0점) 때문에 관련 있는 공고가 후보 단계에서 사라진다.
+- **candidate에 mechanical cap(예: 50건, 마감 임박순 truncate) 적용**
+  — 기각(결정 1). 실측 OPEN 420건이 token 예산 안에 들어오는 상황에서
+  370건을 원천 배제할 근거가 부족하다. candidate 규모가 실제로 수천
+  건 단위로 커지는 시점에 재검토한다.
+- **chunk(25~50건) 단위로 나눠 여러 번 ranking 후 merge/rerank** —
+  기각(이번 Task 범위). 현재 실측 규모(420건)가 chunk 없이 single
+  batch로 처리 가능한 수준이라 판단했고, chunk를 도입하면 서로 다른
+  context에서 계산된 score를 비교해야 하는 문제(절대 척도 비교 불가)가
+  새로 생긴다. 이 문제가 실제로 발생하는 candidate 규모(500건대 이상)에
+  도달하면 별도 Task로 재검토한다.
+- **`matchedThemes` 고정 taxonomy 도입** — 기각(결정 5). ADR-0026
+  결정 5와 같은 이유로, 닫힌 목록이 목록 밖 관련성을 놓치는 위험이
+  UI 활용 이점보다 크다고 판단했다.
+- **PKB empty를 MATCH-002처럼 200+빈 배열로 처리** — 기각(결정 9).
+  ADR-0029 결정 6과 같은 이유.
+- **`/api/recommendations`를 새 최상위 리소스로 신설** — 기각(결정
+  8). 현재로선 `job` 네임스페이스 확장만으로 충분하고, 새 리소스를
+  만들 만한 별도 도메인 경계가 아직 없다고 판단했다.
+
+**이유**: 이 결정 전체를 관통하는 원칙은 두 가지다. 첫째, "각 LLM 호출은
+정확히 하나의 질문에만 답한다"(ADR-0029/ADR-0030과 동일) — RECOMMEND-001의
+질문은 "무엇을 먼저 볼 가치가 있는가"뿐이며, 합격 가능성이나 심층 분석은
+답하지 않는다. 둘째, "관련 있는 공고를 후보 단계에서 놓치지 않는다"
+(ADR-0026 이후 VALIDATE-001로 실측 확인된 원칙) — 이번 결정에서는
+MATCH-001 hard filter뿐 아니라 mechanical candidate cap과 고정 theme
+taxonomy에도 같은 원칙을 일관되게 적용했다. AGENTS.md의 "AI가 사용자가
+하지 않은 경험/수치를 만들어내지 못하게 막는다"는 제약은 ID 기반
+all-or-nothing 검증(결정 6)과 서버가 title/company/deadline을 DB에서
+재조회하는 방식(LLM은 jobId만 반환)으로 동일하게 적용된다.
+
+**영향**: RECOMMEND-001은 이 프로젝트에서 처음으로 "공고 1건이 아니라
+공고 N건"을 한 LLM 호출에 넣는 사례가 된다 — 향후 candidate 규모가
+실제로 수천 건으로 늘어나면 이번에 기각한 chunk 설계를 별도 Task로
+재검토해야 한다(그 시점 chunk score 비교 문제도 함께 해결해야 한다).
+`recommendationScore`와 `semanticScore`가 이름과 척도 모두 다르다는
+사실이 API 문서/DTO 주석에 명시되지 않으면 클라이언트가 두 값을
+동일하게 취급하는 혼란이 생길 수 있다 — 구현 시 필드 주석으로 반드시
+구분한다. Persistence를 두지 않기로 한 결정은 NOTIFY-001이 "이미
+알림 보낸 공고" 판단을 위한 이력 저장을 처음부터 새로 설계해야 함을
+의미한다.
