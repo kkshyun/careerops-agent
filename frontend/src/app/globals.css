@@ -1,9 +1,14 @@
 :root {
   color-scheme: light;
-  --background: #f4f7fb;
-  --foreground: #172033;
-  --muted: #5e687b;
-  --accent: #3157d5;
+  --background: #F6F7F9;
+  --surface: #FFFFFF;
+  --border: #E3E6EC;
+  --text-primary: #16192B;
+  --text-secondary: #5B6072;
+  --accent: #24417A;
+  --success: #1F8A5D;
+  --warning: #B7791F;
+  --danger: #B4322A;
 }
 
 * {
@@ -17,10 +22,12 @@ body {
 }
 
 body {
-  background: radial-gradient(circle at top, #ffffff 0, var(--background) 62%);
-  color: var(--foreground);
-  font-family: Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  background: var(--background);
+  color: var(--text-primary);
+  font-family: var(--font-sans), sans-serif;
 }
+a { color: inherit; }
+button,input,select { font: inherit; }
 
 .landing {
   display: grid;
@@ -34,7 +41,7 @@ body {
   padding: clamp(2.5rem, 7vw, 5rem);
   border: 1px solid rgba(49, 87, 213, 0.12);
   border-radius: 1.5rem;
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--surface);
   box-shadow: 0 1.5rem 4rem rgba(35, 48, 82, 0.1);
   text-align: center;
 }
@@ -56,7 +63,7 @@ h1 {
 
 .subtitle {
   margin: 1.5rem auto 0;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: clamp(1rem, 3vw, 1.2rem);
   line-height: 1.75;
   text-wrap: balance;

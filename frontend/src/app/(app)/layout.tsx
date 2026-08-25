@@ -1,0 +1,2 @@
+import NavToggle,{Navigation} from "@/components/NavToggle";import styles from "@/components/Shell.module.css";
+export default function AppLayout({children}:{children:React.ReactNode}){return <div className={styles.shell}><aside className={styles.sidebar}><span className={styles.brand}>CAREEROPS</span><Navigation/></aside><div className={styles.main}><header className={styles.header}><NavToggle/><span className={styles.headerTitle}>채용 운영 데스크</span></header><main className={styles.content}>{children}</main></div></div>}

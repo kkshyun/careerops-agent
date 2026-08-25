@@ -1,0 +1,17 @@
+export type Page<T> = { content: T[]; totalElements: number; totalPages: number; page: number; size: number };
+export type JobStatus = "OPEN" | "CLOSED";
+export type Job = { id:string; companyName:string; title:string; employmentType:string; careerLevel:string; educationRequirement:string; status:JobStatus; institutionCode:string; jobCategory:string; location:string; applicationStartAt:string|null; applicationEndAt:string|null; source:string; sourceUrl:string; externalId:string; createdAt:string };
+export type JobDetail = Job & { recruitmentSteps:{sortNo:number;stepGroupName:string;competitionRate:string|null;applicantCount:number|null;recruitCount:number|null;occurredAtRaw:string|null}[]; attachments:{sortNo:number;fileName:string;fileType:string;url:string}[] };
+export type ApplicationStatus = "INTERESTED"|"PLANNED"|"SUBMITTED"|"OFFERED"|"REJECTED"|"WITHDRAWN";
+export type Application = { id:string;status:ApplicationStatus;memo:string|null;appliedAt:string|null;createdAt:string;updatedAt:string;jobPostingId:string;companyName:string;title:string;applicationEndAt:string|null;jobPostingStatus:JobStatus };
+export type Stage = {id:string;stageType:"DOCUMENT"|"CODING_TEST"|"WRITTEN"|"INTERVIEW"|"FINAL"|"OTHER";label:string;sortOrder:number;scheduledAt:string|null;result:"PENDING"|"PASSED"|"FAILED"|"CANCELLED";memo:string|null;createdAt:string;updatedAt:string};
+export type ApplicationDetail = Application & { stages:Stage[] };
+export type NotificationStatus = "PENDING"|"SENDING"|"SENT"|"FAILED";
+export type Notification = {id:string;jobId:string;companyName:string;title:string;applicationEndAt:string|null;recommendationScore:number;reason:string;status:NotificationStatus;createdAt:string};
+export type Experience = {id:string;type:"PROJECT"|"ACTIVITY"|"WORK"|"RESEARCH"|"OTHER";title:string;organization:string;role:string;startDate:string;endDate:string|null;summary:string;createdAt:string;updatedAt:string};
+export type ExperienceDetail = Experience & {detail:string;bullets:{bulletType:"CONTEXT"|"ACTION"|"RESULT"|"OTHER";content:string;sortOrder:number}[];tags:string[]};
+export type Certification={id:string;name:string;issuer:string;acquiredDate:string;expirationDate:string|null;credentialId:string|null;description:string|null;createdAt:string;updatedAt:string};
+export type Education={id:string;institution:string;major:string;degree:"HIGH_SCHOOL"|"ASSOCIATE"|"BACHELOR"|"MASTER"|"DOCTORATE"|"OTHER";status:"ENROLLED"|"ON_LEAVE"|"GRADUATED"|"EXPECTED_GRADUATION"|"WITHDRAWN";startDate:string;endDate:string|null;gpa:number|null;gpaScale:number|null;description:string|null;createdAt:string;updatedAt:string};
+export type Award={id:string;title:string;issuer:string;awardedDate:string;description:string|null;createdAt:string;updatedAt:string};
+export type MatchEvidence={type:string;id:string;title:string;score:number;matchedFields:string[]};
+export type JobMatch={overallScore:number;recommendedExperiences:MatchEvidence[];recommendedCertifications:MatchEvidence[];recommendedEducations:MatchEvidence[];recommendedAwards:MatchEvidence[];unmatchedJobCategories:string[];careerLevel:string;educationRequirement:string;computedAt:string};

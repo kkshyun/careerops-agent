@@ -1,0 +1,4 @@
+import { applications } from "@/lib/fixtures/data"; import type { Application,ApplicationDetail,ApplicationStatus,Page } from "@/lib/types"; import {apiBaseUrl,fixturePage,getJson,queryString} from "./client";
+export async function getApplications(q:{status?:string;page?:number;size?:number}={}):Promise<Page<Application>>{if(apiBaseUrl)return getJson(`/api/applications?${queryString(q)}`);let list=[...applications].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));if(q.status)list=list.filter(a=>a.status===q.status);return fixturePage(list,q.page??0,q.size??20)}
+export async function getApplication(id:string):Promise<ApplicationDetail>{if(apiBaseUrl)return getJson(`/api/applications/${encodeURIComponent(id)}`);const item=applications.find(a=>a.id===id);if(!item)throw new Error("지원 내역을 찾을 수 없습니다.");return item}
+export const applicationStatuses:ApplicationStatus[]=["INTERESTED","PLANNED","SUBMITTED","OFFERED","REJECTED","WITHDRAWN"];

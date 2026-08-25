@@ -3282,3 +3282,312 @@ API 호출을 전면 금지하는 정책 하에 있고, KAKAO-001의 실제 Kaka
 다시 읽는다는 것)에 의존한다 — 향후 `KakaoTokenStore`가 per-notification
 으로 다른 credential을 쓰게 되는 변화가 생기면 이 가정을 재검토해야
 한다.
+
+---
+
+## ADR-0036: FRONT-001 데이터 페칭 — Server Component 전용 fetch +
+## env 유무 기반 fixture fallback, CORS/backend/proxy 변경 없음
+
+- 날짜: 2026-08-26
+- 상태: 확정
+- 관련 Task: FRONT-001
+
+**문제**: FRONT-001은 처음으로 frontend가 실제 backend GET API 데이터를
+화면에 표시한다. 그런데 (1) backend(`JobPostingController` 등 전체)에는
+CORS 설정이 전혀 없음을 코드로 확인했다(`CorsConfig`/`@CrossOrigin`/
+`WebMvcConfigurer#addCorsMappings` grep 결과 0건, Spring Security도
+클래스패스에 없어 인증은 없지만 CORS 헤더도 없다) — 브라우저에서 직접
+`fetch('http://localhost:8080/...')`를 호출하면 preflight/응답 헤더 부재로
+차단된다. (2) Vercel production에는 backend가 아직 배포되어 있지 않다
+(`frontend/.env.local.example`의 `NEXT_PUBLIC_API_BASE_URL`이 비어 있음,
+`FRONT-000.md`에도 "백엔드 API 연결이 필요할 때" 값을 채우라고만 되어
+있음). 이 Task는 "Backend production logic/schema 변경, 새 backend API
+설계... CORS 설정 변경은 예외적으로 검토 가능하나 반드시 사용자 승인
+먼저" 제약 아래 있으므로, CORS를 바꾸지 않고도 실제 데이터를 표시할
+방법이 필요하다.
+
+**결정**:
+
+1. **모든 backend 데이터 fetch는 Next.js Server Component(또는 그
+   내부에서 호출하는 서버 전용 `lib/api/*` 함수)에서만 실행한다.**
+   브라우저(Client Component)가 backend를 직접 `fetch`하는 코드는
+   이번 Task에 하나도 만들지 않는다. CORS는 브라우저가 강제하는
+   제약이라, Node.js 서버 프로세스(Next.js가 SSR 시 실행하는 쪽)가
+   backend를 호출하는 것은 애초에 CORS의 적용 대상이 아니다 — 즉
+   "CORS 문제 자체가 발생하지 않는 방식"을 택해, backend
+   코드/설정을 전혀 건드리지 않고도 로컬에서 실제 API 연결이
+   가능하다.
+2. **필터/검색/탭 전환은 client-side fetch가 아니라 URL(searchParams)
+   변경으로 구현한다.** `<Link href="?status=OPEN">`이나 네이티브
+   `<form method="get">` 제출로 URL을 바꾸면 Next.js가 해당 경로의
+   Server Component를 새 `searchParams`로 다시 렌더링한다 — 이 재렌더링
+   과정에서 다시 서버 쪽 fetch가 실행되므로, 상호작용이 있어도 브라우저가
+   backend를 직접 호출하는 경로가 생기지 않는다. 순수 UI 상태(예: PKB
+   경험 카드 펼치기/접기)만 client-side `useState`로 처리하고, 이 상태는
+   이미 서버에서 받아온 데이터를 보여줄지 말지만 토글한다(새 fetch 없음).
+3. **backend 연결 여부는 서버 전용 환경변수 `API_BASE_URL`(`NEXT_PUBLIC_`
+   접두어 없음) 하나로 제어한다.** 이 값이 설정돼 있으면 `lib/api/*`가
+   실제 backend를 호출하고, 비어 있으면 코드에 내장된 fixture 데이터를
+   반환한다. `NEXT_PUBLIC_API_BASE_URL`(FRONT-000이 만든 변수)은 애초에
+   client bundle에 노출하려는 목적이었는데 이번 결정으로 client가 직접
+   backend를 호출하지 않으므로 그 목적이 없어진다 — `.env.local.example`을
+   `API_BASE_URL`로 이름을 바꾸고, FRONT-000의 변수명 변경 사유를 이
+   ADR로 남긴다.
+4. **Vercel production은 `API_BASE_URL`을 설정하지 않는 것을 기본값으로
+   유지한다(backend 미배포 상태이므로).** 이 경우 이번 결정 3에 따라
+   자동으로 fixture 데이터가 쓰인다 — 별도 "Vercel 전용 분기 코드"를
+   추가하지 않고, 환경변수 유무라는 단일 신호로 로컬/운영을 구분한다.
+5. **`API_BASE_URL`이 설정된 상태에서 실제 fetch가 실패하면(백엔드
+   다운 등) fixture로 자동 전환하지 않고 Next.js `error.tsx` 경계로
+   명시적 에러 화면을 보여준다.** fixture 사용은 "backend 연결을
+   의도적으로 끄기로 한 상태"에서만 일어나야 한다 — 연결을 켰는데
+   실패한 상황과 섞이면 "지금 보고 있는 게 실제 데이터인지 데모
+   데이터인지" 구분이 불가능해진다(AGENTS.md 근거 기반 원칙과 같은
+   방향의 "무엇이 진짜 데이터인지 사용자를 속이지 않는다"는 요구).
+6. **이 결정은 GET(읽기)에만 적용된다.** FRONT-002부터 시작될 쓰기
+   (POST/PATCH/DELETE, 지원 등록, Kakao 발송 등)는 브라우저에서 직접
+   트리거되는 사용자 액션이라 서버 컴포넌트만으로는 구현할 수 없다 —
+   그 시점에는 (a) backend CORS 허용(사용자 승인 필요) 또는 (b) Next.js
+   `rewrites()`/Route Handler를 이용한 same-origin 프록시(backend
+   코드는 안 건드리지만 frontend에 새 서버 계층이 생김) 중 하나를 다시
+   설계해야 한다 — 이번 ADR은 그 결정을 대신하지 않는다.
+
+**대안**:
+- **Next.js `rewrites()`로 `/api/*`를 backend로 프록시** — 기각(이번
+  Task 범위). 브라우저가 same-origin(`/api/*`)으로 요청하면 Next.js
+  서버가 내부적으로 backend를 호출해 CORS를 우회할 수 있지만, 이번
+  Task는 client-side fetch가 전혀 없어 프록시가 풀어야 할 문제 자체가
+  없다. 미리 만들면 쓰이지 않는 계층을 추가하는 것이라 YAGNI에 어긋난다
+  — FRONT-002에서 쓰기 기능이 실제로 필요해지는 시점에 재검토(결정 6).
+- **backend에 `CorsConfig` 추가(`localhost:3000`/Vercel 도메인 허용)** —
+  기각(이번 Task 범위, 사용자 승인 필요 사항이기도 함). Server
+  Component 전용 구조만으로 이번 Task의 모든 화면(Dashboard/Jobs/
+  Applications/Career/Notifications, 전부 읽기 전용)을 구현할 수 있어
+  당장 필요하지 않다.
+- **Vercel/로컬을 `process.env.VERCEL` 등으로 분기하는 전용 코드** —
+  기각(결정 4). 환경변수 유무라는 이미 존재하는 단일 신호로 충분하고,
+  플랫폼 이름에 결합된 분기는 다른 배포 대상(예: 다른 PaaS)으로 옮길 때
+  다시 손봐야 한다.
+- **fetch 실패 시 자동으로 fixture로 폴백** — 기각(결정 5). 실제
+  데이터를 기대하는 상황에서 실패를 조용히 데모 데이터로 감추면
+  장애를 인지하지 못하게 된다.
+
+**이유**: "지금 존재하는 문제(CORS)에 정확히 비례하는 해결책만 만든다"는
+ADR-0008과 같은 원칙이다 — 이번 Task는 전부 읽기 전용이라 브라우저가
+backend를 직접 호출할 필요 자체가 없고, 그 사실을 이용해 CORS 문제가
+"풀어야 할 문제"가 아니라 "애초에 발생하지 않는 문제"가 되도록
+아키텍처를 선택했다. backend 코드/설정을 전혀 건드리지 않고, 새 서버
+계층(프록시)도 추가하지 않으면서, 로컬에서는 실제 데이터를, Vercel
+에서는 fixture를 각각 최소 구성으로 보여줄 수 있다.
+
+**영향**: FRONT-001의 모든 상호작용(필터/정렬/페이지네이션/탭)은 URL
+기반 네비게이션으로 구현되어야 한다 — client-side 상태로 필터를
+관리하고 fetch로 갱신하는 일반적인 SPA 패턴은 이번 Task에서 쓰지 않는다.
+PKB 경험처럼 목록 API에 없는 detail 정보(예: `CareerExperience.bullets`)가
+필요한 화면은 목록을 그린 뒤 detail을 추가 fetch하는 대신, 목록 조회
+직후 Server Component에서 관련 detail을 한 번에 병렬로 미리 가져와
+props로 내려준다(PKB 실측 규모가 CareerExperience 6~10건 수준으로
+작아 N+1 호출 비용이 문제되지 않음, ADR-0031 실측 참고). FRONT-002가
+쓰기 기능을 설계할 때 결정 6에서 남긴 CORS vs 프록시 선택을 반드시
+다시 결정해야 한다.
+
+---
+
+## ADR-0037: FRONT-001 스타일링 — Plain CSS Modules + CSS 변수 기반
+## design token, Tailwind/UI 컴포넌트 라이브러리 미도입
+
+- 날짜: 2026-08-26
+- 상태: 확정
+- 관련 Task: FRONT-001
+
+**문제**: FRONT-001부터 화면 수가 1개(랜딩)에서 8개 이상(Dashboard/
+Jobs/Job 상세/Applications/Application 상세/Career 4개 섹션/
+Notifications)으로 늘고, 카드/배지/테이블/타임라인 같은 반복되는 UI
+패턴이 여러 화면에 걸쳐 생긴다. 이 시점에 스타일링 방식을 정하지 않으면
+화면마다 색상/여백 값이 제각각 하드코딩될 위험이 있다. `frontend/`에는
+아직 Tailwind나 다른 UI 프레임워크가 없고(FRONT-000이 "불필요한 디자인
+시스템/라이브러리는 아직 추가하지 않음"이라는 사용자 지시로 의도적으로
+배제, `.ai/tasks/FRONT-000.md` Technical Notes), 기존 `globals.css`는
+이미 plain CSS + CSS custom properties(`--background`/`--foreground`/
+`--muted`/`--accent`)로 작성되어 있다(코드로 확인).
+
+**결정**: **Plain CSS Modules(`*.module.css`, Next.js 내장 기능, 신규
+dependency 없음) + `globals.css`의 `:root` CSS 변수 기반 design token**을
+채택한다. 토큰 이름은 기존 4개(`--background`/`--foreground`/`--muted`/
+`--accent`)를 사용자가 요청한 세트(`--background`/`--surface`/`--border`/
+`--text-primary`/`--text-secondary`/`--accent`/`--success`/`--warning`/
+`--danger`)로 확장·정리한다(`--foreground`→`--text-primary`,
+`--muted`→`--text-secondary`로 개명하고 `--surface`/`--border`/
+`--success`/`--warning`/`--danger`를 신규 추가). 컴포넌트별 스타일은 각
+컴포넌트 옆에 `ComponentName.module.css`로 두고, 색상/여백/radius 값은
+직접 hex/px를 다시 적지 않고 반드시 이 변수를 참조한다. Tailwind, MUI/
+Chakra/Ant Design 등 UI 컴포넌트 라이브러리, styled-components/emotion
+같은 CSS-in-JS 라이브러리는 도입하지 않는다.
+
+**대안**:
+- **Tailwind CSS** — 기각. FRONT-000에서 이미 같은 이유(불필요한
+  디자인 시스템 조기 도입 회피)로 명시적으로 배제된 선례가 있고, 이번
+  Task 규모(화면 8개, 반복 패턴이 카드/배지/테이블/타임라인 정도로
+  적음)에서 utility-class 체계 전체를 새로 들여올 만큼 복잡도가 크지
+  않다. CSS 변수 기반 design token만으로도 "값이 흩어지지 않는다"는
+  목표는 동일하게 달성된다.
+- **MUI/Chakra 등 컴포넌트 라이브러리** — 기각. 특정 라이브러리의
+  디자인 언어(테마, 컴포넌트 API)에 종속되고 번들 크기도 커진다.
+  CareerOps는 아직 브랜드/디자인 방향이 확정되지 않은 개인 프로젝트라
+  자체 CSS로 직접 통제하는 편이 이후 방향 전환에 더 유연하다.
+- **styled-components/emotion(CSS-in-JS)** — 기각. Next.js App Router +
+  React Server Component 조합에서 CSS-in-JS는 서버 컴포넌트와의
+  상호작용에 추가 설정/제약이 따르는 라이브러리가 많고, Next.js가 이미
+  CSS Modules를 아무 설정 없이 지원하므로 신규 dependency를 추가할
+  이유가 없다.
+- **전역 `globals.css` 한 파일에 모든 화면 스타일을 계속 이어 붙이기** —
+  기각. 화면 수가 늘어나는 이번 Task부터는 클래스 이름 충돌/추적
+  어려움이 실제 문제가 될 규모라, 컴포넌트 단위 CSS Modules로 전환하는
+  것이 "과도한 추상화는 피하되 필요한 만큼의 구조는 둔다"는 원칙에 맞다.
+
+**이유**: "최신/유행이라 무조건 쓰지 않는다"는 원칙에 따라, 화면 수가
+아직 개인 프로젝트 MVP 규모(8개 내외)인 시점에는 프레임워크 도입 비용이
+얻는 이점보다 크다고 판단했다. CSS 변수는 브라우저 네이티브 기능이라
+런타임/빌드 비용이 전혀 없고, `globals.css`가 이미 이 패턴으로 시작돼
+있어 자연스러운 확장이다.
+
+**영향**: 다크모드 등 테마 전환이 필요해지면 `:root` 변수 재정의만으로
+확장 가능하다(신규 라이브러리 불필요). 화면/컴포넌트가 크게 늘어나
+반복 패턴이 감당하기 어려워지는 시점이 오면 그때 Tailwind 등을
+재검토한다 — 지금 조기 도입하지 않는다.
+
+## ADR-0038: FRONT-001 Visual Design System — 팔레트/타이포그래피/밀도/
+## signature element, "generic AI dashboard" 회피 원칙
+
+- 날짜: 2026-08-26
+- 상태: 확정
+- 관련 Task: FRONT-001
+
+**문제**: ADR-0037은 스타일링 *방식*(Plain CSS Modules + CSS 변수)만
+정했고, 실제 색상 hex 값/타이포그래피/밀도·형태 원칙은 정하지 않았다.
+사용자가 FRONT-001에서 명시적으로 요구한 것은 "기능이 아니라 시각
+완성도"이며, 구체적으로 (1) 공식 Anthropic `frontend-design` plugin/skill
+(marketplace: `claude-plugins-official`, third-party 아님)을 이번 설계에
+적용하고, (2) "지어낸 듯한 AI 대시보드"로 보이는 흔한 패턴(카드 남발,
+보라/파랑 gradient, glassmorphism, 기계적으로 동일한 4개 KPI 카드,
+"Welcome back 👋" 같은 상투구 등)을 명시적으로 피하고, (3) 구현 후
+실제 브라우저 렌더링을 screenshot으로 확인하는 critique loop를 거치라는
+것이다. `frontend-design` plugin은 이번 세션에 새로 설치했으나(공식,
+비용 없음, `scope: user`) 세션 재시작 전이라 `Skill` 도구로 직접 호출은
+안 되어, plugin의 `SKILL.md` 전체 지침(브레인스토밍 → 계획 → 자기비평 →
+빌드 → 재비평, 4~6개 named hex 팔레트, 2개 이상 typeface 역할 정의,
+signature element 1개, 그리고 "웜 크림+세리프"/"거의 검정+네온 accent"/
+"신문형 하드라인" 3대 AI 기본값을 피하라는 캘리브레이션 지침)을 Claude가
+직접 읽고 수동으로 적용했다.
+
+**결정 — Design Brief**:
+
+1. **Visual concept(1문장)**: CareerOps는 "공고 유입 → 검토 → 지원 결정
+   → 전형 진행 → 다음 행동"이라는 개인 채용 파이프라인을 다루는
+   운영 데스크(operations desk)이지, 마케팅 랜딩이 아니다 — 화면은
+   "지금 무엇을 확인하고 무엇을 해야 하는가"를 우선순위대로 드러내는
+   조용하고 밀도 높은 업무 도구여야 한다.
+2. **Palette**(6개 핵심 + 상태색 3개, 전부 hex):
+   - `--background: #F6F7F9` (차가운 뉴트럴 오프화이트 — "웜 크림
+     (#F4F1EA 근접)+세리프" AI 기본값을 의도적으로 피함)
+   - `--surface: #FFFFFF`
+   - `--border: #E3E6EC`
+   - `--text-primary: #16192B` (잉크에 가까운 네이비-차콜, 순수 검정
+     아님)
+   - `--text-secondary: #5B6072`
+   - `--accent: #24417A` (채도를 낮춘 institutional navy — 흔한
+     "Inter+밝은 파랑+rounded card" 기본값과 구분되는, 한국 금융/공공
+     서비스에 자연스러운 무게감의 남색. Gradient로 쓰지 않고 항상
+     solid fill/텍스트 색으로만 사용)
+   - 상태색(뱃지/rail 전용, accent와 별도): `--success: #1F8A5D`,
+     `--warning: #B7791F`, `--danger: #B4322A` — 셋 다 채도를 낮춘
+     톤(네온/원색 금지).
+3. **Typography**: 새 npm dependency 없이 `next/font/google`로 자체
+   호스팅되는 **IBM Plex 계열**을 display/body/data 전 role에 일관되게
+   사용한다 (Inter를 기본값으로 쓰지 않기 위한 의도적 선택이자, 하나의
+   type superfamily로 "계획된 조합"을 만듦 — 산세리프+모노를 따로
+   고르는 것보다 근거가 분명함):
+   - Display/title(페이지 타이틀, 섹션 헤더): **IBM Plex Sans KR**,
+     SemiBold/Medium, 18~24px, 자간 약간 좁힘. 큰 히어로 숫자로 쓰지
+     않는다(§7 KPI 지침과 연결).
+   - Body(표/리스트/설명): **IBM Plex Sans KR**, Regular 14px / Medium
+     14px(강조).
+   - Data/utility(날짜, D-day, recommendationScore, 사업자/공고 ID 등
+     숫자·코드성 정보): **IBM Plex Mono**, tabular figures, Regular
+     13px — 데이터 컬럼을 산문 텍스트와 시각적으로 분리해 "금융
+     서비스급 정밀함"을 타이포그래피만으로 표현한다.
+   - 한글 렌더링 우선: IBM Plex Sans KR은 한글 글리프를 정식 지원하는
+     Google Fonts 패밀리이며 `next/font/google`이 빌드 타임에
+     자체 호스팅하므로 런타임 외부 요청/추가 dependency가 없다.
+4. **Density**: 페이지 크롬(Header/Sidebar 여백)은 여유 있게, 데이터
+   영역(테이블/리스트 행)은 촘촘하게 — 행 높이 약 40~44px, 8px spacing
+   grid 유지. "화이트스페이스가 커서 정보가 적어 보이는" 실패를
+   피하기 위해 리스트/테이블은 카드로 감싸지 않고 hairline border로만
+   구분한다(§8 요구사항과 연결 — Jobs는 compact list/table 우선).
+5. **Shape**: border-radius 6px(카드/입력/버튼), 4px(뱃지) 고정 —
+   과도하게 둥근 모서리 금지. Border는 `--border` 1px hairline을
+   기본 구분자로 쓰고, box-shadow는 오버레이(모바일 드로어 네비,
+   드롭다운) 등 실제로 "떠 있는" 요소에만 예외적으로 사용한다 — 일반
+   카드/행에는 그림자를 쓰지 않는다("카드마다 그림자" AI 패턴 회피).
+6. **Signature element — "Status Rail"**: 시간/상태를 가진 모든 리스트
+   행(Dashboard 요약 리스트, Jobs 목록, Applications 목록, Notifications
+   목록)의 왼쪽에 3px 색상 세로 바를 둔다. 색상은 그 행이 나타내는
+   긴급도/상태를 인코딩한다 — Jobs는 마감 임박도(평시 `--border` 톤 →
+   7일 이내 `--warning`), Applications는 현재 status 매핑, Notifications는
+   PENDING/SENDING/SENT/FAILED 매핑. 뱃지/pill을 화면마다 반복해서
+   추가하는 대신, 이 rail 하나로 "지금 봐야 할 것"을 스캔 가능하게
+   만드는 것이 CareerOps의 시각적 정체성이다(개념적으로 "파이프라인의
+   신호등"). Career 화면처럼 시간/긴급도 개념이 없는 화면에는 rail을
+   억지로 쓰지 않는다(§4 "소재를 억지로 모두 쓰지 않는다" 원칙).
+7. **Page hierarchy(5개 화면이 같은 제품처럼 보이는 규칙)**: 모든 페이지
+   헤더는 "페이지 타이틀(Plex Sans KR Medium) + 한 줄 카운트/컨텍스트
+   (`--text-secondary`)"로 통일하고, 큰 히어로 영역을 두지 않는다. 시간/
+   상태 데이터를 다루는 3개 화면(Jobs/Applications/Notifications)은
+   동일한 행 anatomy(status rail + 주 식별 정보 + data-face 메타 컬럼 +
+   상태 표기)를 공유하고, Dashboard도 "최근 알림"/"지원 현황" 섹션에
+   같은 행 anatomy를 재사용한다(카드 그리드를 새로 발명하지 않음).
+   Career는 시간 데이터가 아니므로 rail 없이 문서형 레이아웃을 쓰되,
+   같은 색 토큰/타이포 스케일/8px grid/헤더 패턴을 공유해 "같은
+   제품군"임을 유지한다.
+8. **AI-slop self-audit(자체 지적 + 수정, 3개 이상)**:
+   - *위험 1*: Dashboard의 4개 summary card를 동일한 모양으로 나열하면
+     전형적 "템플릿 대시보드"가 된다. → **수정**: 4개를 동일 카드
+     그리드로 만들지 않는다. 가장 먼저 확인해야 할 정보(다가오는 마감
+     1건)를 단일 강조 행으로 상단에 두고, 나머지 3개 수치는 그보다
+     작은 인라인 stat strip으로 부차적으로 배치해 시각적 중요도를
+     의도적으로 다르게 만든다(§7 요구사항).
+   - *위험 2*: 상태를 rail + 뱃지 + 아이콘 3중으로 표시하면 뱃지/pill
+     남발이 된다. → **수정**: 상태의 1차 신호는 rail이 담당하고,
+     `NotificationStatus`처럼 rail만으로 불충분한 진짜 이산 값에만
+     텍스트 뱃지를 1개만 추가한다. rail·뱃지·아이콘을 동시에 쓰지
+     않는다.
+   - *위험 3*: 아이콘을 모든 행/모든 버튼에 붙이면 "아이콘 스프"가
+     된다. → **수정**: `lucide-react`는 Sidebar 네비게이션(5개)과
+     소수의 기능적 어포던스(외부 링크, 펼치기 chevron)에만 쓰고, 데이터
+     행/뱃지에는 아이콘을 붙이지 않는다.
+   - *위험 4*: Dashboard에 "OPEN 채용공고 12" 같은 거대한 히어로 숫자를
+     쓰면 "의미 없는 큰 숫자" 패턴이 된다. → **수정**: 모든 수치는
+     data-face(Plex Mono)로 문장형 stat row 안에 중간 크기로 표기하고,
+     독립된 큰 히어로 숫자를 만들지 않는다.
+   - *위험 5*: 빈 상태 문구를 "No data found"류로 무성의하게 쓰면
+     생성형 UI 특유의 무심한 톤이 된다. → **수정**: "등록된 지원
+     내역이 없습니다"처럼 CareerOps의 실제 용어로, 이모지/느낌표 없이
+     담백하게 쓴다.
+
+**대안**:
+- **파란색 gradient + 둥근 카드 + Inter (기본값)** — 기각. 사용자가
+  명시적으로 금지 목록에 넣었고, `frontend-design` skill의 캘리브레이션
+  지침이 경고하는 3대 AI 기본값 중 하나(근접 검정+네온 accent 계열)와
+  본질적으로 같은 "고민 없는 기본값" 함정이다.
+- **웜 크림 배경 + 세리프 display** — 기각. `frontend-design` skill이
+  명시적으로 "AI 생성 디자인이 몰리는 3대 기본값" 중 하나로 지목한
+  조합이라 의도적으로 피했다(§2 근거).
+- **Pretendard(한국 UI에서 흔히 쓰는 변수 폰트)** — 검토했으나 별도
+  npm dependency(`@fontsource/pretendard` 등)가 필요해 "신규
+  dependency는 lucide-react 하나만" 원칙과 충돌해 기각. `next/font/google`
+  내장 지원만으로 해결되는 IBM Plex 계열을 택했다.
+
+**영향**: 이 ADR은 ADR-0037(스타일링 *방식*)을 대체하지 않고 보강한다 —
+ADR-0037의 토큰 *이름* 목록에 실제 hex 값과 사용 규칙을 채워 넣은
+것이다. FRONT-002 이후 새 화면을 추가할 때도 이 팔레트/타이포/rail
+규칙을 기본값으로 따르고, 크게 벗어날 필요가 생기면 새 ADR로 갱신한다.

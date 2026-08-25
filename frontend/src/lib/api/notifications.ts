@@ -1,0 +1,3 @@
+import {notifications} from "@/lib/fixtures/data";import type {Notification,NotificationStatus,Page} from "@/lib/types";import {apiBaseUrl,fixturePage,getJson,queryString} from "./client";
+export async function getNotifications(q:{status?:string;page?:number;size?:number}={}):Promise<Page<Notification>>{if(apiBaseUrl)return getJson(`/api/notifications/job-recommendations?${queryString(q)}`);let list=[...notifications].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));if(q.status)list=list.filter(n=>n.status===q.status);return fixturePage(list,q.page??0,q.size??20)}
+export const notificationStatuses:NotificationStatus[]=["PENDING","SENDING","SENT","FAILED"];
