@@ -263,8 +263,24 @@ FK는 `JobPosting`→`JobApplication`의 `NO ACTION` 컨벤션(ADR-0016)을
 `JobApplication` 없이는 의미가 없는 진짜 aggregate 내부 데이터이기
 때문이다. `@Transactional` 미사용, 신규 dependency 없음은 기존 컨벤션과
 동일. 신규 migration `V6__create_application_stages_table.sql`.
-나머지 도메인은 아직 코드로 구현되지 않았다. 순서는
-[ROADMAP.md](ROADMAP.md)에서 사용자 승인을 받아 정한다.
+이후 Phase 11~14(ROADMAP.md)에서 PKB 전체 도메인, `JobPosting`↔PKB
+매칭(MATCH-001/002), 지원 전략/자기소개서 분석(AGENT-001/002), 다건
+추천(RECOMMEND-001/001.1), 알림 준비(NOTIFY-001), Kakao 발송(KAKAO-001),
+자동화 파이프라인(AUTOMATION-001)까지 구현이 완료됐다 — 각 Task의 상세
+설계 근거는 이 문서를 다시 서술하는 대신 `docs/DECISIONS.md`의
+ADR-0018~ADR-0035와 해당 `.ai/tasks/`에 남긴다. AUTOMATION-001은
+`AutomationPrepareScheduler`/`AutomationDeliveryService` 같은 신규
+orchestration 계층이 기존 `JobRecommendationService`/
+`NotificationPreparationService`/`NotificationSendService`를 그대로
+호출만 하고 production 코드를 수정하지 않는 방식으로, 이 세 Service가
+각자 확립해온 "외부 API(Anthropic/Kakao) 대기 시간 동안 DB transaction을
+점유하지 않는다"는 트랜잭션 경계 원칙(ADR-0032/0033/0034)을 orchestration
+계층에도 그대로 적용한다(ADR-0035). 자동 스케줄러는
+`careerops.automation.prepare.enabled`/`delivery.enabled`(둘 다 기본
+`false`)로 통제되며, 이 flag가 꺼진 상태에서는 Anthropic/Kakao credential
+유무와 무관하게 자동 호출 경로 자체가 존재하지 않는다. 아직 남은 도메인
+(frontend, multi-user, 결제 등)은 ROADMAP.md에서 사용자 승인을 받아
+순서를 정한다.
 
 ## 시스템 구성 (개략, 미확정)
 

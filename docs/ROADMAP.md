@@ -413,15 +413,61 @@ Phase에서 다루지 않는다.
       1건이 간헐적으로 실패하는 현상을 발견했으나 `git stash`로 이번
       변경분을 제거한 clean main HEAD에서도 동일 재현되어 PKB-006부터
       있던 기존 결함으로 판정(이번 Task 범위 밖, 별도 후속 조치 필요).
+- [x] PKB-008.1 — PKB-008 구조화 추출 스키마를 nullable로 완화하고 prompt를
+      v2로 보강(실측 데이터에서 필수 필드 추론 강제가 오히려 부정확한 값을
+      만드는 사례 발견). 상세는 `.ai/tasks/PKB-008.1.md`/
+      `.ai/reviews/PKB-008.1-review-1.md`/ADR-0027 참고.
+
+## Phase 14 — 매칭/지원전략/자기소개서/추천/알림/Kakao 발송/자동화 (완료)
+
+목표: 승인된 PKB와 수집된 채용공고를 실제로 연결해 "이 공고에 지원할
+가치가 있는가"부터 "실제로 사용자에게 알린다"까지 제품의 핵심 가치
+전달을 완성한다. 아래 각 Task의 상세 설계/근거는 해당 ADR과
+`.ai/tasks/`/`.ai/reviews/`에 있다 — 이 Phase는 앞선 Phase들과 달리 매
+Task를 여기 재서술하지 않고 목록과 핵심 요지만 남긴다.
+
+- [x] MATCH-001 — `JobPosting`↔PKB deterministic 매칭(키워드/조건 기반
+      `overallScore`). `GET /api/jobs/{id}/match`. ADR-0026.
+- [x] MATCH-002 — Claude 기반 semantic 매칭(공고 1건당 LLM 1회). `GET
+      /api/jobs/{id}/semantic-match`. ADR-0028.
+- [x] AGENT-001 — 공고별 지원 전략 분석(MATCH-002 후보 풀 재사용,
+      `recommendedExperiences`/`primaryMessage`/`positioningSummary`/
+      `avoidOrBeCareful`/`gaps`). `GET /api/jobs/{id}/agent-analysis`.
+      ADR-0029.
+- [x] AGENT-002 — 자기소개서 문항 공동 분석(단일 LLM 호출)/경험 배치/
+      초안 생성. 승인 PKB 전체를 후보로 노출(AGENT-001 후보 풀 원칙을
+      의도적으로 이탈). `POST /api/jobs/{id}/application-draft`. ADR-0030.
+- [x] RECOMMEND-001 — OPEN 공고 전체를 candidate로 Batch Semantic
+      Ranking(LLM 호출 1회로 고정, 공고 수 무관). `POST
+      /api/jobs/recommendations?limit=N`(default 5/max 20). persistence
+      없음(on-demand). ADR-0031.
+- [x] RECOMMEND-001.1 — RECOMMEND-001 안정화. DB read transaction과
+      provider I/O 분리, immutable `RecommendationInput` snapshot, 좁은
+      repair retry(최대 1회), provider output 상한 지시. 공개 API/
+      NOTIFY-001 contract 불변. ADR-0033.
+- [x] NOTIFY-001 — RECOMMEND 결과 중 아직 알리지 않은 공고를
+      `JobRecommendationNotification`(PENDING)으로 저장(`job_posting_id`
+      UNIQUE dedupe), unseen pool 순차 소진. `POST/GET
+      /api/notifications/job-recommendations`. 실제 메시지 전송은 이
+      Task 범위 밖(KAKAO-001). ADR-0032.
+- [x] KAKAO-001 — PENDING notification을 카카오톡 "나에게 보내기"로 전송.
+      `SENDING` atomic conditional claim으로 동시 발송 방지, Kakao HTTP
+      호출은 DB 트랜잭션 밖에서 실행, refresh_token만 영속화(access_token
+      미저장). `POST /api/notifications/job-recommendations/{id}/send`.
+      **실제 Kakao E2E는 사용자 승인 대기 중 — 코드/자동 테스트만 완료
+      상태.** ADR-0034.
+- [x] AUTOMATION-001 — RECOMMEND→NOTIFY→KAKAO를 두 개의 독립된 cron
+      스케줄러(`careerops.automation.prepare.enabled`/`delivery.enabled`,
+      둘 다 기본 false)로 자동화. 기존 Service는 전혀 수정하지 않고
+      그대로 호출만 한다. 진입점이 stage당 하나뿐이라 overlap guard를
+      만들지 않음. `docs/PROJECT.md`의 "매일 아침 카카오톡 전달" 목표를
+      cron(Asia/Seoul)으로 충족. ADR-0035.
 
 ### Phase 13 이후 후보
 
-- **`MATCH-001`(가칭) — `JobPosting` ↔ PKB 적합도 매칭** — PKB-008까지
-  완료되어 문서 기반/수동 PKB가 모두 구조화된 상태로 쌓이기 시작했다.
-  AGENTS.md가 정의한 제품 목표("지원자의 이력에 맞는 적합도를 판단해
-  카카오톡으로 알림")의 다음 단계. embedding/pgvector/RAG 도입 여부부터
-  먼저 조사·결정해야 한다(PKB-008에서 의도적으로 범위 밖으로 미뤄둔
-  영역). 아직 착수 전, 우선순위는 사용자 승인 필요.
+(`JobPosting` ↔ PKB 적합도 매칭부터 자동화 파이프라인까지는 Phase 14로
+완료됐다. 아래는 아직 해결되지 않은 별도 항목만 남긴다.)
+
 - **`ImportCandidateConcurrencyTest.concurrentCompleteAndCreatePreserveBatchInvariant()`
   간헐적 실패** — PKB-008 구현 중 로컬 전체 테스트에서 발견. `git stash`로
   PKB-008 변경분을 전부 제거한 clean main HEAD(PKB-007 완료 시점)에서도

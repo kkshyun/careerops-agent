@@ -245,11 +245,39 @@ candidates≈461, created=5, duration≈65~68초 — RECOMMEND-001 자체가
 `alreadyNotifiedCount`로만 반영되고 재생성되지 않음을 실측 확인했고,
 backend 재시작 후에도 저장된 row가 그대로 유지됨을 확인했다.
 
+**채용공고 추천 알림 카카오톡 발송 (KAKAO-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_kakao_send_request_total` | `careerops.kakao.send.request` | Counter | `result`=`success`\|`provider_error`\|`provider_5xx`\|`delivery_unknown`\|`token_refresh_failed`\|`invalid_message_data` | claim 성공 후 실제 전송 시도(atomic claim 이후)의 결과 분포. 404/409는 claim 이전에 걸러지므로 계측하지 않는다 | `NotificationSendService.send()` |
+| `careerops_kakao_send_duration_seconds` | `careerops.kakao.send.duration` | Timer | 없음 | claim부터 최종 상태 전이(SENT/FAILED)까지 소요 시간 | `NotificationSendService.send()` |
+| `careerops_kakao_token_refresh_total` | `careerops.kakao.token.refresh` | Counter | `result`=`success`\|`failure` | access_token 재발급 시도 결과(access_token은 저장하지 않고 매 전송마다 재발급 — ADR-0034 결정 1) | `KakaoTokenStore` |
+
+notificationId/jobId는 태그로 쓰지 않는다. `sourceUrl`이 없는 JobPosting은
+`invalid_message_data`로 분류되고 provider는 호출되지 않는다.
+
+**추천→알림 준비→Kakao 발송 자동화 (AUTOMATION-001)**
+
+| 지표명 (Prometheus 노출명) | Micrometer 이름 | 타입 | 태그 | 의미 | 계측 위치 |
+|---|---|---|---|---|---|
+| `careerops_automation_prepare_run_total` | `careerops.automation.prepare.run` | Counter | `result`=`completed`\|`failed` | prepare 자동 실행 1회의 완주 여부(내부 `prepare()`가 409/502로 실패해도 orchestration 자체는 `completed`로 기록되고, 실제 실패 여부는 `AutomationPrepareRunResult.succeeded`로 구분) | `AutomationPrepareService.runOnce()` |
+| `careerops_automation_prepare_duration_seconds` | `careerops.automation.prepare.duration` | Timer | 없음 | prepare 실행 1회 소요 시간 | `AutomationPrepareService.runOnce()` |
+| `careerops_automation_delivery_run_total` | `careerops.automation.delivery.run` | Counter | `result`=`completed` | delivery 자동 실행 1회 완주 횟수(개별 항목 실패는 delivery 자체의 실패가 아님) | `AutomationDeliveryService.runOnce()` |
+| `careerops_automation_delivery_duration_seconds` | `careerops.automation.delivery.duration` | Timer | 없음 | delivery 실행 1회(선택된 후보 전체 처리) 소요 시간 | `AutomationDeliveryService.runOnce()` |
+| `careerops_automation_delivery_candidates` | `careerops.automation.delivery.candidates` | DistributionSummary | 없음 | 이번 run이 선택한 PENDING backlog 크기(≤ `delivery.limit`) 분포 | `AutomationDeliveryService.runOnce()` |
+| `careerops_automation_delivery_short_circuited_total` | `careerops.automation.delivery.short_circuited` | Counter | `reason`=`token_refresh_failed` | systemic 실패(refresh_token/credential 문제)로 남은 delivery 시도를 중단한 횟수 | `AutomationDeliveryService.runOnce()` |
+
+이 두 stage가 호출하는 `careerops.notification.job-recommendation.*`
+(NOTIFY-001)/`careerops.recommendation.*`(RECOMMEND-001)/`careerops.kakao.*`
+(KAKAO-001)도 자연히 함께 증가하는 것이 의도된 연쇄다(ADR-0035). 기본
+설정(`careerops.automation.prepare.enabled`/`delivery.enabled` 둘 다
+false)에서는 두 Scheduler Bean 자체가 생성되지 않으므로 이 지표들은
+전혀 증가하지 않는다.
+
 ### 예정 (미구현, 관련 기능 Task에서 정의)
 
 - 중복 공고 제거율
 - 추천 Top-K 적합도
-- 카카오톡 알림 성공률
 - 경험 Retrieval 적합도
 - 자기소개서 unsupported claim 비율
 - 자기소개서 작성 시간 감소율

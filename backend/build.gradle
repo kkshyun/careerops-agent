@@ -44,4 +44,6 @@ tasks.named('test') {
     // SPRING_DATASOURCE_URL)를 이길 수 없어 여기서 테스트 JVM 환경변수를 직접 강제한다.
     environment 'SPRING_DATASOURCE_URL', 'jdbc:postgresql://localhost:5432/careerops_test'
     environment 'CAREEROPS_SCHEDULER_ALIO_ENABLED', 'false'
+    environment 'CAREEROPS_AUTOMATION_PREPARE_ENABLED', 'false'
+    environment 'CAREEROPS_AUTOMATION_DELIVERY_ENABLED', 'false'
 }

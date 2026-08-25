@@ -3125,3 +3125,160 @@ KAKAO-002/AUTOMATION-001이 새로운 실패 유형을 추가할 때 migration �
 않기로 한 것(결정 5의 연장)은 known limitation으로 남으며, 후속
 DELIVERY-RETRY/AUTOMATION Task가 lease/sweeper 도입 여부를 다시
 판단해야 한다.
+
+---
+
+## ADR-0035: 추천→알림 준비→Kakao 발송 자동화(AUTOMATION-001) — prepare/
+## delivery 단계별 독립 flag(기본 false), cron 기반 매일 아침 스케줄,
+## 단일 진입점 전제 overlap guard 생략, PENDING 전용 backlog,
+## TOKEN_REFRESH_FAILED short-circuit
+
+- 날짜: 2026-08-25
+- 상태: 확정
+- 관련 Task: AUTOMATION-001 (전제: NOTIFY-001/ADR-0032, KAKAO-001/ADR-0034)
+
+**문제**: RECOMMEND-001/NOTIFY-001/KAKAO-001은 전부 수동 HTTP API로만
+트리거된다. `docs/PROJECT.md`의 제품 목표("신규/추천/마감임박 공고를
+매일 아침 카카오톡으로 전달한다")를 실제로 충족하려면 이 세 단계를
+주기적으로 자동 실행해야 한다. 다만 이 프로젝트는 실제 유료 Anthropic
+API 호출을 전면 금지하는 정책 하에 있고, KAKAO-001의 실제 Kakao E2E도
+아직 사용자 승인을 받지 않은 상태다 — 따라서 자동화 스케줄러가 기본
+상태에서 실수로라도 실제 외부 API를 호출하는 일이 없어야 한다는 것이
+이번 설계의 최우선 제약이다.
+
+**결정**:
+
+1. **"각 기능을 다시 구현"하지 않고 기존 Service를 그대로 호출한다.**
+   `NotificationPreparationService.prepare(int limit)`(내부에서 이미
+   `JobRecommendationService.recommend(20)`을 재사용)와
+   `NotificationSendService.send(long id)`를 신규 orchestration 계층이
+   호출할 뿐, 두 Service의 production 코드는 전혀 수정하지 않는다.
+   RECOMMEND-001을 AUTOMATION에서 별도로 다시 호출하지 않는다(중복 LLM
+   호출 방지).
+2. **prepare와 delivery를 완전히 독립된 두 pair(Scheduler+Service)로
+   분리하고, 각각 독립된 feature flag(`careerops.automation.prepare.enabled`
+   /`careerops.automation.delivery.enabled`, 둘 다 기본 false)로
+   통제한다.** 단일 `automation.enabled` 하나로 묶는 대안도 검토했으나,
+   "prepare는 자동 실행하되 delivery는 사람이 수동으로 `/send`를
+   호출해 검토 후 보낸다"는 조합을 사용자가 명시적으로 요구했다 — 단일
+   flag로는 이 조합을 표현할 수 없다. 두 flag 모두 `@ConditionalOnProperty
+   (..., havingValue="true")`(matchIfMissing 미지정 → 기본 false)로 걸어,
+   flag가 false인 동안은 해당 `@Scheduled` 메서드를 가진 Scheduler Bean
+   자체가 Spring 컨텍스트에 생성되지 않는다 — Anthropic/Kakao credential이
+   `.env`에 비어 있어도(현재 실제 상태) 이 사실과 무관하게 자동 호출
+   경로 자체가 존재하지 않음을 보장하는 것이 핵심 안전장치다(코드로
+   확인: `AnthropicJobRecommendationClient`/`KakaoTokenStore` 둘 다
+   생성자가 아니라 실제 호출 메서드 안에서만 credential을 lazy하게
+   검증하므로, Bean 생성 자체는 credential 유무와 무관하게 항상
+   성공한다 — 따라서 "Bean이 아예 없다"만이 확실한 차단선이다).
+3. **cron 기반 스케줄(Asia/Seoul, prepare 07:50 → delivery 08:00)을
+   채택하고, `fixedDelay`는 채택하지 않는다.** `fixedDelay`는 "얼마나
+   자주"만 보장하고 "언제"는 기동 시각에 종속되는데, 제품 목표가
+   명시적으로 "매일 아침"이므로 특정 시각에 정렬되는 cron이 이 목표와
+   정확히 일치한다. delivery를 prepare보다 10분 뒤로 둔 것은 그날의
+   prepare 결과가 delivery 대상에 포함될 시간을 확보하기 위함이지만,
+   두 스케줄러가 서로를 기다리도록 결합하지는 않는다 — delivery는
+   자기 실행 시점의 PENDING backlog 전체를 대상으로 하므로 prepare가
+   그날 아직 안 끝났거나 실패했어도 기존 backlog만으로 독립적으로
+   정상 동작한다(결정 5와 연결).
+4. **Overlap guard(JVM lock/DB advisory lock/Redis lock)를 만들지
+   않는다.** COLLECT-006이 `ReentrantLock`을 추가한 이유는 "수동 API +
+   scheduler"라는 **두 개의 서로 다른 진입점**이 동시에 같은 자원을
+   건드릴 수 있었기 때문이다(코드로 확인). 이번 설계는 수동 실행
+   API를 만들지 않기로 했으므로(결정 8) 각 stage의 진입점이 정확히
+   그 stage 전용 `@Scheduled` 메서드 하나뿐이다 — Spring의 cron 트리거
+   기본 동작(이전 실행이 끝나야 다음 트리거가 실질적으로 의미를 갖는
+   일반적 케이스)만으로 충분하며, 이 프로젝트에 Redis/분산 락 실사용
+   선례가 전혀 없다는 사실(`docker-compose`에만 떠 있는 미사용
+   인프라, 코드 grep으로 확인)도 새 lock infra를 도입하지 않는 방향을
+   뒷받침한다. **이 결정은 결정 8(수동 API 없음)에 종속적이다** — 이후
+   수동 실행 API가 추가되면 그 시점에 COLLECT-006과 동일한 lock
+   패턴을 반드시 재도입해야 한다.
+5. **Delivery 대상은 "이번 run에서 새로 생성된 것"이 아니라, PENDING
+   전체를 생성 시각 오래된 순으로 최대 `deliveryLimit`개 선택한다
+   (backlog 방식).** "신규 생성분만"은 이전 run에서 실패/중단 등으로
+   남은 PENDING이 영원히 전송되지 않는 구조적 결함이 있다 —
+   ADR-0026/0031/0032가 일관되게 지켜온 "관련 있는 것을 후보 단계에서
+   놓치지 않는다" 원칙을 여기도 동일하게 적용했다. 단, 기존
+   `JobRecommendationNotificationRepository.search()`는 정렬이
+   `ORDER BY n.createdAt DESC, n.id DESC`로 하드코딩돼 있어(코드로
+   확인) 그대로 재사용할 수 없어, 신규 조회 메서드
+   (`findIdsByStatusOrderByCreatedAtAsc`, `status`는 항상 PENDING)를
+   추가한다. FAILED는 이 조회에 포함하지 않는다 — AUTOMATION은
+   PENDING만 자동 재시도 대상으로 삼고, 사람이 `/send`를 수동으로
+   다시 호출해 FAILED를 재시도하는 기존 경로(ADR-0034의 atomic claim
+   쿼리가 이미 허용)는 그대로 유지된다. Migration은 필요 없다(기존
+   컬럼/index로 충분, 이 규모에서 신규 index 근거 없음).
+6. **Prepare 실패(409/502)는 로그/metric만 남기고 예외를 삼켜, delivery
+   stage 실행에 영향을 주지 않는다.** 두 stage가 완전히 독립이므로
+   이는 자연스럽게 보장된다 — prepare가 실패해도 이전 run들이 쌓아둔
+   PENDING backlog는 delivery stage가 자기 스케줄에 따라 계속 발송을
+   시도한다.
+7. **Delivery 부분 실패는 best-effort로 나머지 항목을 계속 시도하되,
+   `TOKEN_REFRESH_FAILED`만 예외적으로 그 run의 남은 시도를
+   short-circuit한다.** `PROVIDER_ERROR`/`PROVIDER_5XX`/`DELIVERY_UNKNOWN`
+   은 개별 메시지/일시적 성격이라 한 항목의 실패가 다른 알림 발송을
+   막을 이유가 없다. 그러나 `TOKEN_REFRESH_FAILED`는 같은 DB
+   row/`.env` 설정을 다시 읽을 뿐이므로 같은 run의 나머지 모든 항목도
+   결정론적으로 동일하게 실패할 것이 사실상 확실하다 — 이미 실패가
+   확정된 시도를 반복해 불필요한 실제 Kakao 호출을 여러 번 더
+   일으키는 것을 막기 위해 이 경우만 명시적으로 중단한다(`if (reason
+   == TOKEN_REFRESH_FAILED) break;` 수준의 단순 분기, 별도 circuit
+   breaker 인프라 아님).
+8. **수동 실행 API(`POST /api/automation/...`)를 만들지 않는다.** 기존
+   `POST /api/notifications/job-recommendations`와 `POST
+   .../{id}/send`가 이미 더 세밀한 수동 제어 수단을 제공하므로 얇은
+   wrapper endpoint는 추가 가치가 없고, 검증은 Service를 테스트에서
+   직접 호출하는 것으로 충분하다. 이 결정이 결정 4(overlap guard
+   생략)를 성립시키는 전제이기도 하다.
+9. **`AutomationRun` 같은 실행 이력 entity/migration을 만들지 않는다.**
+   `AlioCollectionScheduler`/`JobRecommendationService`/
+   `NotificationPreparationService` 모두 실행 결과를 별도 테이블이
+   아니라 Micrometer metric + 구조화 로그 한 줄로만 남기는 것이 이
+   프로젝트의 일관된 패턴이다 — 같은 패턴이면 "이 run이 무엇을
+   했는지" 재구성에 충분하다.
+
+**대안**:
+- **단일 `automation.enabled` flag** — 기각(결정 2). "prepare 자동/
+  delivery 수동" 조합을 표현할 수 없다.
+- **`AutomationService.runOnce()` 하나가 prepare→delivery를 순서대로
+  처리하는 단일 orchestrator** — 기각(결정 2와 연결). 단계별 flag를
+  채택하면 두 stage가 서로 다른 시각에 서로 다른 on/off 상태로
+  동작해야 하므로, 하나의 공유 orchestrator보다 두 개의 독립된
+  컴포넌트가 실제 요구를 더 정확히 반영한다.
+- **`fixedDelay` 기반 스케줄** — 기각(결정 3). "매일 아침"이라는 제품
+  목표와 어긋난다.
+- **JVM `AtomicBoolean`/DB advisory lock/Redis distributed lock** —
+  기각(결정 4). 진입점이 stage당 하나뿐인 상황에서는 해결할 문제가
+  없는 인프라다.
+- **이번 run에서 새로 생성된 notification만 delivery** — 기각(결정
+  5). 백로그가 쌓이면 영원히 전송되지 않는 공고가 생긴다.
+- **delivery 실패를 전부 fail-fast로 중단** — 기각(결정 7). 개별
+  메시지 실패가 다른 알림 발송을 막을 이유가 없다.
+- **`TOKEN_REFRESH_FAILED`도 예외 없이 best-effort로 반복 시도** —
+  기각(결정 7). credential 오류 상황에서 매 항목마다 불필요한 실제
+  Kakao 호출이 반복된다.
+
+**이유**: 이 결정 전체를 관통하는 원칙은 세 가지다. 첫째, "외부 API 대기
+시간 동안 DB connection/transaction을 점유하지 않는다"(ADR-0032/0033/0034가
+이미 세 번 확립, orchestration 계층에도 네 번째로 동일하게 적용 —
+`AutomationPrepareService`/`AutomationDeliveryService` 어디에도
+`@Transactional`을 두지 않는다). 둘째, "실제로 존재하는 문제만 해결한다"
+— overlap guard는 "수동 API + scheduler"라는 실제 코드 구조(COLLECT-006)
+에서만 필요했던 것이지, 진입점이 하나뿐인 이번 설계에는 해당하지 않는
+문제를 관성적으로 복제하지 않았다(코드를 실제로 읽어 COLLECT-006의 lock이
+왜 필요했는지 확인한 뒤에야 내릴 수 있었던 판단). 셋째, "관련 있는 것을
+후보 단계에서 놓치지 않는다"(ADR-0026/0031/0032) — PENDING backlog 방식
+(결정 5)과 best-effort delivery(결정 7)가 이 원칙을 유지한다.
+
+**영향**: `JobRecommendationNotificationRepository`에 신규 조회 메서드가
+추가되지만 기존 `search()`/`claimForSending()`/엔티티/컬럼은 전혀 바뀌지
+않는다 — NOTIFY-001/KAKAO-001의 API 계약과 트랜잭션 경계는 이번 Task로
+전혀 영향받지 않는다. 향후 수동 실행 API가 추가되면(예: 운영 편의를 위해)
+그 시점에 반드시 COLLECT-006과 동일한 lock 패턴을 재도입해야 한다는
+조건부 의존성이 남는다 — 이 조건을 놓치면 결정 4가 더 이상 안전하지
+않다. `TOKEN_REFRESH_FAILED` short-circuit은 이 reason이 정말로
+"systemic"하다는 전제(같은 프로세스 안에서 같은 refresh_token/설정을
+다시 읽는다는 것)에 의존한다 — 향후 `KakaoTokenStore`가 per-notification
+으로 다른 credential을 쓰게 되는 변화가 생기면 이 가정을 재검토해야
+한다.

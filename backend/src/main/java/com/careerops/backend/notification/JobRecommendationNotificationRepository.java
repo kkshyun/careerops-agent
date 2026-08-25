@@ -28,6 +28,11 @@ public interface JobRecommendationNotificationRepository extends JpaRepository<J
     Page<JobRecommendationNotificationResponse> search(
             @Param("status") NotificationStatus status, Pageable pageable);
 
+    @Query("SELECT n.id FROM JobRecommendationNotification n WHERE n.status = :status " +
+            "ORDER BY n.createdAt ASC, n.id ASC")
+    List<Long> findIdsByStatusOrderByCreatedAtAsc(
+            @Param("status") NotificationStatus status, Pageable pageable);
+
     boolean existsByJobPostingId(Long jobPostingId);
     long countByJobPostingId(Long jobPostingId);
 

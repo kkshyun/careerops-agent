@@ -57,6 +57,17 @@ careerops:
       initial-delay: PT1M
       fixed-delay: PT6H
       num-of-rows: 5000
+  automation:
+    prepare:
+      enabled: ${CAREEROPS_AUTOMATION_PREPARE_ENABLED:false}
+      cron: "0 50 7 * * *"
+      zone: Asia/Seoul
+      limit: 5
+    delivery:
+      enabled: ${CAREEROPS_AUTOMATION_DELIVERY_ENABLED:false}
+      cron: "0 0 8 * * *"
+      zone: Asia/Seoul
+      limit: 5
 
 management:
   endpoints:
