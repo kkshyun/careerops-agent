@@ -16,6 +16,9 @@ public class JobRecommendationNotification {
     @Column(nullable = false, length = 200) private String reason;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) private NotificationStatus status;
     @CreationTimestamp @Column(nullable = false) private Instant createdAt;
+    private Instant sentAt;
+    private Instant lastAttemptAt;
+    @Column(length = 40) private String failureCode;
 
     protected JobRecommendationNotification() {}
 
@@ -36,4 +39,7 @@ public class JobRecommendationNotification {
     public String getReason() { return reason; }
     public NotificationStatus getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
+    public Instant getSentAt() { return sentAt; }
+    public Instant getLastAttemptAt() { return lastAttemptAt; }
+    public String getFailureCode() { return failureCode; }
 }

@@ -17,8 +17,11 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/notifications/job-recommendations")
 public class JobRecommendationNotificationController {
     private final NotificationPreparationService service;
+    private final NotificationSendService sendService;
 
-    public JobRecommendationNotificationController(NotificationPreparationService service) { this.service = service; }
+    public JobRecommendationNotificationController(NotificationPreparationService service, NotificationSendService sendService) {
+        this.service = service; this.sendService = sendService;
+    }
 
     @PostMapping
     public NotificationPreparationResponse prepare(
@@ -33,9 +36,16 @@ public class JobRecommendationNotificationController {
         return service.search(status, pageable);
     }
 
+    @PostMapping("/{id}/send")
+    public NotificationSendResponse send(@PathVariable long id) { return sendService.send(id); }
+
     @ExceptionHandler(JobRecommendationException.class)
     @ResponseStatus(HttpStatus.BAD_GATEWAY)
     public void recommendationFailure() {}
+
+    @ExceptionHandler(KakaoDeliveryException.class)
+    @ResponseStatus(HttpStatus.BAD_GATEWAY)
+    public void kakaoDeliveryFailure() {}
 
     @ExceptionHandler(ConstraintViolationException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

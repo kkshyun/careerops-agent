@@ -2967,3 +2967,161 @@ timeout 값 자체를 가리키지 않는 상황에서 추측성 변경을 하�
 이번에 추가한 진단 로그를 근거로 값을 조정하거나 `classify()` 분류
 자체를 세분화해야 한다 — 그 결정을 미리 내리지 않은 것은 의도된
 유예다.
+
+---
+
+## ADR-0034: 채용공고 추천 알림 카카오톡 발송(KAKAO-001) — refresh_token만
+## 영속화(access_token 미저장), SENDING atomic claim, idempotency
+## 부재로 인한 자동 retry 금지, Default Text 템플릿, provider 실패는
+## FAILED commit 후 502
+
+- 날짜: 2026-08-25
+- 상태: 확정
+- 관련 Task: KAKAO-001 (전제: NOTIFY-001/ADR-0032)
+
+**문제**: NOTIFY-001(ADR-0032)은 알림 대상을 `JobRecommendationNotification`
+(status=PENDING)으로 저장하는 것까지만 했고, 실제 메시지 전송은 의도적으로
+후속 Phase로 미뤄졌다. KAKAO-001은 이 PENDING notification을 사용자 본인의
+카카오톡 "나와의 채팅방"(Send-to-me)으로 전송해야 한다. 세 가지 독립적인
+어려움이 있다: (1) Kakao Login access_token은 수명이 짧고 refresh_token으로
+갱신해야 하는데, 이 프로젝트는 단일 사용자 개인 MVP로 기존 인증/암호화
+인프라가 전혀 없다. (2) 동일 notification에 대한 동시 send 요청이 중복
+카카오톡 메시지를 발송할 위험이 있다. (3) 설계 조사(2026-08-25,
+developers.kakao.com 공식 문서 확인) 결과 Send-to-me API에는 공식
+idempotency 메커니즘이 없어, network timeout에 대한 자동 재전송이 중복
+발송으로 이어질 수 있다.
+
+**결정**:
+
+1. **app credential은 `.env`, user OAuth token은 `refresh_token`만 DB에
+   저장하고 access_token은 저장하지 않는다.** `CAREEROPS_KAKAO_REST_API_KEY`/
+   `CAREEROPS_KAKAO_CLIENT_SECRET`은 기존 `.env`/`application.yml
+   (careerops.*)` 컨벤션을 그대로 따른다. `kakao_oauth_token`(singleton,
+   0~1행)에는 `refresh_token`+`refresh_token_expires_at`(nullable)만
+   저장하고, **access_token은 매 전송 요청마다 `grant_type=refresh_token`
+   으로 즉시 새로 발급받아 그 자리에서만 쓰고 버린다.** 개인용 저빈도(하루
+   몇 건) 발송이므로 access_token 캐싱/만료 추적 로직 자체를 없애는 것이
+   순수 캐싱 로직을 추가하는 것보다 단순하고, "401(만료된 access_token)"
+   시나리오를 상시 경로에서 사실상 제거한다.
+2. **plaintext 저장을 그대로 채택하고, 별도 암호화 계층을 추가하지
+   않는다.** 이 프로젝트에 KMS/Vault 등 암호화 인프라가 없고, PKB 개인
+   이력 데이터도 이미 같은 DB에 평문으로 저장되는 기존 보안 모델과 동일
+   수준이다. 토큰 하나 때문에 새 encryption-at-rest 계층/dependency를
+   추가하는 것은 이번 MVP 규모에 대한 과잉설계로 판단했다 — DB 접근 자체가
+   신뢰 경계라는 것을 known limitation으로 문서화하고, 로그 미노출로
+   위험을 상쇄한다.
+3. **최초 OAuth 연결은 OAuth connect endpoint(authorize redirect/callback)
+   를 구현하지 않고, 사용자가 Kakao Developers 콘솔에서 수동으로
+   refresh_token을 1회 발급받아 `.env`(`CAREEROPS_KAKAO_INITIAL_REFRESH_TOKEN`)
+   에 입력하면 앱이 DB로 1회 이관(seed)한다.** 이번 Task 목적은 메시지
+   delivery이지 OAuth UI가 아니다. authorize/callback endpoint는 이 저장소에
+   전혀 없는 인증 계층(state/CSRF 방어, session 등)을 새로 요구해 스코프가
+   크게 늘어난다 — 개인용 backend MVP에서 최초 1회의 수동 콘솔 조작 비용이
+   이 복잡도보다 명백히 낮다.
+4. **refresh 응답 rotation 규칙을 그대로 반영한다: 응답에 새
+   `refresh_token`이 있으면 DB 값을 교체하고, 없으면 기존 값을
+   유지한다.** 공식 문서 확인 결과 Kakao는 남은 유효기간이 1개월 미만일
+   때만 새 refresh_token을 반환한다 — "항상 교체" 또는 "절대 교체 안 함"
+   둘 다 틀린 가정이므로, 응답에 필드가 있는지 여부로만 분기한다.
+5. **동시 send 방지를 위해 `NotificationStatus`에 `SENDING`을 추가하고,
+   atomic conditional UPDATE로 claim한다** (`WHERE id=:id AND status IN
+   ('PENDING','FAILED')`, `affectedRows==1`인 요청만 provider 호출).
+   대안(기존 3-state 유지 + `SELECT FOR UPDATE` 같은 DB lock)은 ADR-0032가
+   확립한 "외부 API 대기 시간 동안 DB connection/transaction을 점유하지
+   않는다"는 원칙과 정면 충돌해 기각했다 — Kakao 호출은 초 단위가 걸릴 수
+   있는 외부 I/O이므로 그 시간 동안 row lock을 잡는 것은 이 프로젝트가
+   RECOMMEND-001.1(ADR-0033)에서 이미 명시적으로 경계한 실수를 반복하는
+   것이다. `FAILED`도 claim 대상에 포함해 전용 `/retry` endpoint 없이
+   `/send` 재호출만으로 재시도가 가능하게 했다(결정 8과 연결).
+6. **Kakao 메시지/토큰 HTTP 호출은 어떤 DB 트랜잭션도 열려있지 않은
+   상태에서 실행하고, claim과 최종 상태 전이(SENDING→SENT/FAILED)는 각각
+   독립된 짧은 트랜잭션으로 분리한다.** ADR-0032/ADR-0033이 이미 이
+   프로젝트에서 두 번 확립한 "external I/O와 DB transaction 경계 분리"
+   원칙을 세 번째로 동일하게 적용한다. 최종 전이도 조건부 UPDATE
+   (`WHERE status='SENDING'`)로 수행해 예기치 않은 상태 불일치를 조용히
+   무시하지 않는다.
+7. **provider 실패로 인한 `FAILED` 전이는 반드시 commit된 뒤에 502
+   예외가 컨트롤러로 전파된다.** `@Transactional`로 "상태 갱신 →
+   예외 throw"를 하나로 묶으면 예외 전파가 트랜잭션을 롤백시켜 FAILED
+   기록 자체가 유실되는 흔한 실수가 생긴다(§AGENTS.md 공통 원칙과 무관한
+   구현 디테일이지만 실제 여러 프로젝트에서 반복되는 버그 패턴) — 상태
+   전이용 repository 메서드가 각자 독립 커밋되므로 이 실수가 구조적으로
+   발생하지 않는다. API 레벨에서 provider/token 실패는 일괄 502로
+   통일한다(성공 경로의 200과만 명확히 구분하면 충분하고, 4xx/5xx/timeout을
+   세분화한 응답 코드 체계를 클라이언트에 추가로 노출할 실질적 필요가
+   없다는 것이 이번 MVP 단계의 판단이다 — 세분화가 필요해지면 `failureCode`
+   필드로 이미 DB에 남는다).
+8. **자동 network-timeout/5xx retry를 도입하지 않는다.** 공식 문서에서
+   idempotency key 등 중복 방지 메커니즘을 확인하지 못했다 — 자동
+   재전송은 "전송됐는지 알 수 없는데 또 보내는" 위험을 그대로 안는다.
+   이 시스템의 delivery semantics를 **"요청 1회당 최대 1회의 능동적 전송
+   시도"(at-most-one-active-attempt)**로 명시적으로 정의하고, exactly-once
+   를 주장하지 않는다. timeout은 `failureCode=DELIVERY_UNKNOWN`으로 다른
+   실패와 구분해 저장하고, 재시도 여부는 사람(단일 사용자 본인)이 `/send`
+   재호출로 직접 판단한다(human-in-the-loop) — 개인용 저빈도 MVP에서는
+   자동화보다 정직한 상태 표시를 우선했다.
+9. **Kakao Default Text 템플릿만 사용한다(`object_type=text`, `text`≤200자,
+   `link.web_url`=`JobPosting.sourceUrl` 필수).** Custom 템플릿은 Kakao
+   콘솔에서 사전 등록이 필요해 개인용 MVP에 설정 비용을 추가하고, Feed
+   템플릿은 `image_url`을 요구해 이번 목적(텍스트 알림)에 불필요한 이미지
+   자산 관리를 강제한다. `link`가 API 필수 파라미터이므로 `sourceUrl`이
+   null인 `JobPosting`(스키마상 nullable)은 provider를 호출하지 않고
+   `failureCode=INVALID_MESSAGE_DATA`로 즉시 FAILED 처리한다 — 잘못된
+   요청으로 Kakao를 호출해 불필요한 4xx를 만들지 않는다.
+10. **메시지는 `KakaoRecommendationMessageFormatter`(pure/deterministic)
+    가 notification snapshot과 `JobPosting` DB 실제값만으로 구성하고,
+    LLM을 사용하지 않는다.** AGENTS.md의 "AI가 사용자가 하지 않은 경험/
+    수치를 만들어내지 못하게 막는다"는 원칙을 그대로 승계 — reason은
+    RECOMMEND snapshot을 그대로 쓰고 재요약하지 않는다. 총 200자 예산
+    초과 시 `String.length()`(Java char) 기준 truncate만 적용한다(순수
+    텍스트 템플릿이라 이모지/서로게이트 페어가 없어 UTF-8 byte 기준과의
+    불일치 문제가 애초에 발생하지 않는다).
+
+**대안**:
+- **access_token도 DB에 캐싱하고 401 시에만 refresh** — 기각(결정 1).
+  캐싱/만료 추적 로직이 추가되는 대신 얻는 이득(요청당 refresh 1회 절약)
+  이 개인용 저빈도 사용 패턴에서는 작다. 단순함을 우선했다.
+- **refresh_token까지 `.env`에 저장(자동 재작성)** — 기각(결정 1과 연결).
+  rotation 시 앱이 `.env` 파일을 스스로 재작성해야 하는데, 이는
+  "`.env`는 앱이 쓰는 대상이 아니다"라는 기존 컨벤션(`application.yml`
+  주석)과 충돌하고 컨테이너 배포 환경에서 더 취약하다.
+- **암호화 저장(KMS/Vault 등)** — 기각(결정 2). 이번 MVP 규모에 필요한
+  근거가 없는 새 인프라/dependency 도입.
+- **OAuth connect endpoint 구현** — 기각(결정 3). 메시지 delivery라는
+  이번 Task 목적 대비 과한 스코프(state/CSRF/session 등 인증 계층 신규
+  구현).
+- **기존 3-state + `SELECT FOR UPDATE`** — 기각(결정 5). 외부 API 대기
+  시간 동안 DB lock을 점유하는 구조적 결함.
+- **자동 network-timeout retry (idempotency 없이)** — 기각(결정 8). 중복
+  발송 위험을 감수할 근거가 없다.
+- **Custom Kakao 템플릿(template_id 사전 등록)** — 기각(결정 9). 개인용
+  MVP에 불필요한 외부 설정 의존성 추가.
+- **provider 실패를 4xx/5xx/timeout별로 세분화한 HTTP 응답 코드** —
+  기각(결정 7). 클라이언트가 이 구분을 실제로 소비할 필요가 아직 없고,
+  필요해지면 이미 DB에 남는 `failureCode`로 확장 가능하다.
+
+**이유**: 이 결정 전체를 관통하는 원칙은 세 가지다. 첫째, "외부 API 대기
+시간 동안 DB connection/transaction을 점유하지 않는다"(ADR-0032/ADR-0033
+에서 이미 두 번 확립, 결정 5/6에서 세 번째로 동일하게 적용). 둘째, "근거
+없는 보장을 하지 않는다" — idempotency 메커니즘이 실제로 없다는 사실을
+확인한 뒤에는 exactly-once나 안전한 자동 retry를 흉내 내지 않고, 그
+한계를 `DELIVERY_UNKNOWN`이라는 명시적 상태로 정직하게 드러냈다(결정 8).
+셋째, "이번 MVP 규모에 근거 없는 인프라를 미리 추가하지 않는다"(YAGNI,
+ADR-0026/ADR-0031/ADR-0032가 일관되게 적용해온 원칙) — 암호화 계층(결정
+2), OAuth connect endpoint(결정 3), custom 템플릿(결정 9), 세분화된 에러
+응답 코드(결정 7) 모두 지금 근거가 없는 복잡도로 판단해 기각했다.
+
+**영향**: `NotificationStatus`에 `SENDING`이 추가되면서 이 enum을
+소비하는 모든 코드(검색 API의 `status` 필터 등)가 4-state를 인지해야
+한다 — 기존 NOTIFY-001 API 계약(`GET .../job-recommendations?status=`)
+자체는 변경되지 않지만, 실제 값 집합이 늘어난다. access_token을 저장하지
+않기로 한 결정은 향후 AUTOMATION-001이 주기적으로 여러 건을 발송하게
+되면 매 건마다 refresh 호출이 발생한다는 뜻이다 — 이번 조사에서는 이
+호출 자체에 별도 quota 제약이 확인되지 않았으므로 문제가 아니라고
+판단했지만, AUTOMATION-001에서 발송 빈도가 크게 늘어나면 재검토
+대상이다. `failureCode`를 자유 문자열 컬럼으로 열어둔 것은 향후
+KAKAO-002/AUTOMATION-001이 새로운 실패 유형을 추가할 때 migration 없이
+확장 가능하게 하려는 의도다. SENDING crash에 대한 자동 복구를 만들지
+않기로 한 것(결정 5의 연장)은 known limitation으로 남으며, 후속
+DELIVERY-RETRY/AUTOMATION Task가 lease/sweeper 도입 여부를 다시
+판단해야 한다.

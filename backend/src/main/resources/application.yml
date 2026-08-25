@@ -43,6 +43,14 @@ careerops:
     alio:
       api-key: ${JOB_ALIO_API_KEY:}
       base-url: https://opendata.alio.go.kr/new/v1/recruit
+  kakao:
+    rest-api-key: ${CAREEROPS_KAKAO_REST_API_KEY:}
+    client-secret: ${CAREEROPS_KAKAO_CLIENT_SECRET:}
+    initial-refresh-token: ${CAREEROPS_KAKAO_INITIAL_REFRESH_TOKEN:}
+    auth-base-url: https://kauth.kakao.com
+    api-base-url: https://kapi.kakao.com
+    connect-timeout-seconds: 5
+    request-timeout-seconds: 10
   scheduler:
     alio:
       enabled: ${CAREEROPS_SCHEDULER_ALIO_ENABLED:true}

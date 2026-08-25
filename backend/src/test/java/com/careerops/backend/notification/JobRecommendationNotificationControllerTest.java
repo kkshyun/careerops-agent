@@ -13,6 +13,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.time.Instant;
 
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -23,6 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class JobRecommendationNotificationControllerTest {
     @MockitoBean NotificationPreparationService service;
+    @MockitoBean NotificationSendService sendService;
     @Autowired MockMvc mvc;
 
     @BeforeEach void setUp() {
@@ -38,4 +40,21 @@ class JobRecommendationNotificationControllerTest {
     @Test void pkbConflictIsPreserved() throws Exception { when(service.prepare(5)).thenThrow(new ResponseStatusException(HttpStatus.CONFLICT)); mvc.perform(post("/api/notifications/job-recommendations")).andExpect(status().isConflict()); }
     @Test void statusFilterIsPassedToReadService() throws Exception { mvc.perform(get("/api/notifications/job-recommendations?status=PENDING")).andExpect(status().isOk()); verify(service).search(eq(NotificationStatus.PENDING), any(Pageable.class)); }
     @Test void readApiUsesPageable() throws Exception { mvc.perform(get("/api/notifications/job-recommendations?page=2&size=7")).andExpect(status().isOk()); verify(service).search(isNull(), argThat(p -> p.getPageNumber() == 2 && p.getPageSize() == 7)); }
+    @Test void sendSuccessReturnsContract() throws Exception {
+        when(sendService.send(7)).thenReturn(new NotificationSendResponse(7,NotificationStatus.SENT,Instant.parse("2026-08-25T01:02:03Z"),9));
+        mvc.perform(post("/api/notifications/job-recommendations/7/send")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.notificationId").value(7)).andExpect(jsonPath("$.status").value("SENT"))
+                .andExpect(jsonPath("$.sentAt").value("2026-08-25T01:02:03Z")).andExpect(jsonPath("$.jobId").value(9))
+                .andExpect(jsonPath("$.accessToken").doesNotExist()).andExpect(jsonPath("$.result_code").doesNotExist());
+    }
+    @Test void sendNotFoundAndConflictArePreserved() throws Exception {
+        when(sendService.send(404)).thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
+        when(sendService.send(409)).thenThrow(new ResponseStatusException(HttpStatus.CONFLICT));
+        mvc.perform(post("/api/notifications/job-recommendations/404/send")).andExpect(status().isNotFound());
+        mvc.perform(post("/api/notifications/job-recommendations/409/send")).andExpect(status().isConflict());
+    }
+    @Test void sendProviderFailureReturnsEmptyBadGateway() throws Exception {
+        when(sendService.send(7)).thenThrow(new KakaoDeliveryException("failed"));
+        mvc.perform(post("/api/notifications/job-recommendations/7/send")).andExpect(status().isBadGateway()).andExpect(content().string(""));
+    }
 }
