@@ -2739,3 +2739,231 @@ RECOMMEND-001의 랭킹 로직이 바뀌어도 이미 생성된 notification의 
 인지해야 한다. `NotificationStatus`에 SENT/FAILED 값이 이미 존재하므로
 KAKAO-001은 새 enum을 만들지 않고 값만 사용하게 되지만, 그 전이에
 필요한 컬럼은 KAKAO-001이 새 migration으로 추가해야 한다.
+
+---
+
+## ADR-0033: 다건 채용공고 추천 안정화(RECOMMEND-001.1) — transaction
+## boundary 분리, immutable candidate snapshot, provider output 상한
+## 지시, 좁은 repair retry(최대 1회), timeout 재검토 보류
+
+- 날짜: 2026-08-25
+- 상태: 확정
+- 관련 Task: RECOMMEND-001.1 (원 Task: RECOMMEND-001/ADR-0031,
+  회귀 대상: NOTIFY-001/ADR-0032)
+
+**문제**: NOTIFY-001 실제 E2E(`.ai/tasks/NOTIFY-001.md` "실제 E2E 결과")에서
+candidate 452~461건 규모의 `POST /api/jobs/recommendations` 호출 4회 중
+3회가 각각 `MALFORMED_RESPONSE`/`UNKNOWN_JOB_ID`/`NETWORK_TIMEOUT`로
+실패했다(각 50~81초). RECOMMEND-001(ADR-0031)은 OPEN candidate가 420건
+수준일 때 설계·검증됐고, candidate 규모가 계속 커지는 지금(ALIO
+scheduler가 계속 신규 공고를 수집) 이 실패율은 재현 가능한 안정성
+문제로 확인됐다. 이번 조사로 다음 세 가지 근본 원인 후보를 코드
+직접 확인으로 좁혔다:
+
+1. **장기 트랜잭션**: `JobRecommendationService.recommend()`가
+   `@Transactional(readOnly=true)`이고, 그 트랜잭션 안에서 (a) 7개
+   repository로 PKB/OPEN candidate를 JPA Entity로 읽고 (b) Anthropic
+   호출(실측 47~81초)을 기다린 뒤 (c) `convert()` 내부에서
+   `jobs.findAllById(...)`로 DB를 다시 조회한다 — DB 커넥션 하나가
+   Anthropic 응답을 기다리는 동안 통째로 점유된다. ADR-0032가 이미
+   "이 위에 추가 트랜잭션을 얹지 않는다"로 대응했지만, RECOMMEND-001
+   자신의 이 장기 트랜잭션 자체는 그대로 남아 있었다.
+2. **provider output 상한 부재**: 구조화 출력 schema
+   (`RawRecommendationResult`/`RawJobRecommendation`)에 배열 크기 제약이
+   전혀 없고, prompt도 "요청한 개수(`limit`, 최대 20) 이하만 반환"이라는
+   느슨한 지시뿐이다. `MAX_TOKENS=8_192`는 고정인데 candidate가
+   400건대를 넘어가면 모델이 더 많은 후보를 평가·서술하려는 경향이
+   생겨 JSON이 도중에 잘릴 위험이 커진다 — `MALFORMED_RESPONSE`의
+   유력 원인이다.
+3. **넓은 candidate 풀에서 ID hallucination 위험 증가**: 4자리 jobId
+   400개 이상이 긴 `<jobs>` 목록에 흩어져 있고, "허용된 ID만 쓰라"는
+   자연어 지시 외에 별도 강조 장치가 없다 — `UNKNOWN_JOB_ID`의 유력
+   원인이다.
+
+`NETWORK_TIMEOUT`은 이번 조사에서 원인을 확정하지 못했다. 실패
+duration(50~81초)이 90초 request timeout보다 짧고 성공 케이스(47~76초)와
+겹쳐, 90초 벽을 실제로 넘긴 증거가 없다. Anthropic Java SDK 2.54.0의
+공개 문서/GitHub 소스를 조사한 결과, 이 SDK는 기본적으로 **연결 오류/
+408/409/429/5xx를 지수 백오프로 최대 2회 자동 재시도**하며(총 3회
+시도), **timeout은 "재시도를 제외한" 개별 시도 단위**로 적용된다 —
+ADR-0027에서 실측된 "120초 timeout 설정 시 SDK 재시도가 겹쳐 약 6분
+뒤에야 최종 실패"(120초×3회 시도와 정확히 일치)가 이 동작과 일치함을
+이번에 문서로도 재확인했다. 이 사실을 적용하면, 90초 timeout이 실제로
+소진됐다면 실패까지 최대 약 270초(90초×3회)가 걸려야 하는데 실측은
+50~81초에 그쳤다 — 즉 `NETWORK_TIMEOUT`으로 분류된 실패가 진짜
+"응답을 기다리다 시간 초과"가 아니라, `classify()`가
+`AnthropicIoException`/`SocketTimeoutException`/`IOException`/클래스명에
+`Timeout` 포함을 전부 하나로 묶어 판단하기 때문에 실제로는 다른 종류의
+`IOException`(예: 큰 요청/응답 도중의 연결 재설정)이 `NETWORK_TIMEOUT`
+으로 잘못 이름 붙었을 가능성이 있다. 이 가설은 실제 예외 클래스를 로그로
+남긴 뒤에야 확정할 수 있어, 이번 ADR은 timeout 값 자체를 바꾸지 않고
+진단 가능성만 먼저 개선하기로 결정한다(아래 결정 6).
+
+**결정**:
+
+1. **`RecommendationCandidateReader`를 신설해 DB 읽기와 DTO
+   materialize만 `@Transactional(readOnly=true)`로 감싸고,
+   `JobRecommendationService.recommend()`/`calculate()`에서는
+   `@Transactional`을 제거한다.** 흐름을 `reader.read()`(짧은
+   read-only 트랜잭션, 밀리초 단위) → (트랜잭션 종료) →
+   `client.recommend(...)`(Anthropic 호출, DB 커넥션 미점유) →
+   (필요 시 repair retry, 여전히 DB 커넥션 미점유) → 결과 조립 순서로
+   재구성한다. `JobPosting`/`CareerExperience`/`Certification`/
+   `Education`/`Award`는 모두 plain `@Column`만 있고 연관관계가
+   없으며(`ExperienceTag.careerExperience`만 예외지만 서비스는
+   `.getId()`만 사용), Entity를 DTO로 변환해 트랜잭션 밖으로 내보내도
+   `LazyInitializationException` 위험이 없음을 코드로 직접 확인했다.
+   `convert()` 내부의 재조회(`jobs.findAllById(unique.keySet())`)는
+   유지하되 이 역시 짧은 개별 read-only 트랜잭션으로 남는다(ID 검증
+   목적의 짧은 조회이며 LLM 대기와 묶이지 않는다).
+2. **`RecommendationInput`(및 `RecommendationJobCandidate`/
+   `RecommendationExperience`/`RecommendationCertification`/
+   `RecommendationEducation`/`RecommendationAward`) immutable record를
+   신설하고, `JobRecommendationClient` 인터페이스가 JPA Entity 대신
+   이 record를 받도록 변경한다.** `JobRecommendationPromptBuilder`도
+   Entity 직접 접근 대신 이 record로 프롬프트를 만든다. 이렇게 하면
+   (a) 트랜잭션 경계가 코드 구조로 강제되고(Entity가 애초에 트랜잭션
+   밖으로 나갈 수 없음), (b) repair retry(결정 5)가 동일 snapshot을
+   재사용함을 타입으로 보장한다(재시도 시 DB를 다시 읽을 방법 자체가
+   코드에 없다).
+3. **provider output 상한을 schema가 아니라 prompt 지시로만 강제한다.**
+   Anthropic structured output(JSON Schema 기반)이 `maxItems`/
+   `minItems`/`minimum`/`maximum`/`minLength` 같은 배열·수치 제약
+   키워드를 지원하지 않고 포함 시 400으로 거부한다는 사실을 공식
+   문서로 확인했다(PKB-008.1/ADR-0027에서 확인된 "union 파라미터
+   16개 상한"과는 별개의 제약). 따라서 `providerTopK = max(limit*2,
+   20)`을 계산해 prompt에 "recommendations 배열은 최대
+   `providerTopK`개까지만 포함하라. 나머지 후보는 평가 대상에는
+   포함하되 출력하지 않는다"처럼 명시적 상한 문장으로 지시한다(기존
+   "요청한 개수 이하만 반환"이라는 느슨한 문장보다 훨씬 명확한 상한
+   숫자를 준다). 모델이 이 지시를 어기고 `providerTopK`보다 많이
+   반환해도 서버가 이를 이유로 즉시 실패시키지 않는다 — 기존 dedup
+   (최고 score 유지) + 정렬 + `limit` truncate 로직이 초과분을 그대로
+   흡수할 수 있으므로 별도 hard-cap 검증 코드를 새로 만들지 않는다
+   (YAGNI, ADR-0026/ADR-0031이 지켜온 최소 구현 원칙과 동일).
+   `providerTopK`는 최종 API `limit`(1~20)과 다른 값이며, `limit*2` 여유는
+   ID 검증 실패나 중복 jobId로 일부가 버려져도 최종 `limit`개를
+   채울 여지를 남기기 위함이다.
+4. **candidate 자체에는 여전히 cap을 두지 않는다(ADR-0031 결정 1
+   재확인).** candidate 크기(현재 420~461건) 문제는 결정 3(output
+   상한 지시)으로 대응하며, candidate 입력 자체를 줄이면 ADR-0026/
+   ADR-0031이 반증한 "관련 있는 공고를 후보 단계에서 놓친다"는
+   false negative가 재발한다. Safety를 위한 절대 상한(예: candidate
+   1,000건 초과 시 즉시 4xx)도 이번엔 도입하지 않는다 — 현재 규모
+   (461건, 조사 시점 예상 input token 약 50,000~65,000 수준)에서
+   근거가 되는 실측 실패가 없고, 미리 만든 hard cap은 그 값 자체가
+   추측이 되어 나중에 실제 규모에 맞지 않을 위험이 있다. 대신
+   `careerops.recommendation.candidates`(기존 지표)를 계속 관찰하다가
+   candidate가 수천 건 단위로 커지는 시점에 별도 Task로
+   chunk/prefilter 설계를 재검토한다(ADR-0031 결정 1의 유예 조건과
+   동일).
+5. **validation/malformed 실패(UNKNOWN_JOB_ID/UNKNOWN_PKB_ID/
+   SCORE_OUT_OF_RANGE/MALFORMED_RESPONSE)에 한해 provider repair
+   retry를 최대 1회 허용한다.** `JobRecommendationException`에
+   `isRepairable()`(위 4개 reason만 true)을 신설해 기존 metric 태깅용
+   `isValidationFailure()`(UNKNOWN_JOB_ID/UNKNOWN_PKB_ID/
+   SCORE_OUT_OF_RANGE만 포함, `MALFORMED_RESPONSE`는 여전히
+   `provider_error`로 집계)와 의도적으로 분리한다 — 두 메서드의 목적이
+   다르다(하나는 "재시도할 가치가 있는가", 하나는 "어느 지표 버킷에
+   집계하는가")는 사실을 이름으로도 구분한다. `NETWORK_TIMEOUT`/
+   `PROVIDER_4XX`/`PROVIDER_RETRY_EXHAUSTED`는 repair retry 대상이
+   아니다 — 이들은 애초에 Anthropic SDK 자체가 이미 내부적으로 최대
+   2회 재시도(결정 근거 참고)를 소진한 뒤에야 우리 코드에 도달하는
+   실패이므로, 그 위에 application-level 재시도를 또 얹으면 지연만
+   커지고 성공 가능성은 거의 늘지 않는다(ADR-0027에서 실측된 "재시도가
+   실패를 지연시킬 뿐 해결하지 못한" 선례와 같은 판단). retry는
+   결정 2의 동일 `RecommendationInput` snapshot을 재사용하며 DB를
+   다시 읽지 않는다 — candidate 집합이 하나의 request(및 그 repair
+   retry) 안에서 항상 고정됨을 보장한다(scheduler가 그 사이 새 공고를
+   추가해도 이번 request에는 반영되지 않음, 의도된 것).
+6. **timeout(90초)은 이번에 바꾸지 않는다. 대신 실패 시 예외 클래스
+   simple name만(원문/메시지 없이) 로그에 남겨 향후 진단을 가능하게
+   한다.** 문제 정의에서 확인했듯 실측 실패 duration(50~81초)이 90초
+   미만이라 timeout 값 자체가 원인이라는 증거가 없다 — 근거 없이
+   150/180초로 올리는 것은 ADR-0027의 "확정된 원인 없이 값만 올리면
+   재시도가 실패를 지연시킬 뿐"이라는 선례를 반복하는 것이다. 대신
+   `AnthropicJobRecommendationClient.classify()`가 분류에 사용한
+   예외의 `getClass().getSimpleName()`을 `NETWORK_TIMEOUT`/
+   `MALFORMED_RESPONSE`/`PROVIDER_RETRY_EXHAUSTED` 로그 라인에 추가한다
+   (jobId/score/duration만 남기던 기존 로그 원칙 그대로, 클래스 이름은
+   PKB/공고 원문이 아니므로 privacy 제약과 무관). 이후 실제 E2E에서
+   `NETWORK_TIMEOUT`이 재현되면 그 로그로 "진짜 timeout인지, 다른
+   `IOException`이 잘못 분류된 것인지"를 실제 근거로 판별할 수 있고,
+   그 결과에 따라 timeout 값 조정이나 `classify()` 분류 세분화를 후속
+   Task로 결정한다 — 이번 Task 범위에서는 "무엇을 관찰해야 하는가"만
+   확정하고 "얼마로 바꿀 것인가"는 결정하지 않는다.
+7. **`careerops.recommendation.provider.retry`(Counter, `outcome`=
+   `repaired`|`still_failed` 태그)와
+   `careerops.recommendation.provider.validation_failure`(Counter,
+   `reason`=UNKNOWN_JOB_ID|UNKNOWN_PKB_ID|SCORE_OUT_OF_RANGE|
+   MALFORMED_RESPONSE 태그)를 신설한다.** 전자는 repair retry가 실제로
+   얼마나 자주 필요한지와 그 성공률을, 후자는 attempt 단위로 어떤
+   reason이 가장 빈번한지를 관찰한다 — 기존
+   `careerops.recommendation.request{result=...}`는 최종 결과만 보므로
+   "1차는 실패했지만 재시도로 복구된" 빈도를 볼 수 없다는 관측
+   공백을 메운다. token usage(`StructuredMessage.usage()`) 지표는
+   PKB-008.1이 `javap`으로 `stopReason()`/`usage()` 존재를 이미
+   확인한 선례가 있으므로 구현 시점에 접근 가능성만 재확인해 가능하면
+   추가하고(고정 label만 사용, job/PKB 내용 label 금지), 불가능하면
+   이번 Task에서 강제하지 않는다(blocking 기준 아님).
+
+**대안**:
+
+- **timeout을 150초 또는 180초로 선제적으로 상향** — 기각(결정 6).
+  실측 실패 duration이 현재 90초보다 짧아 timeout이 원인이라는 근거가
+  없다. ADR-0027 선례(근거 없는 timeout 상향은 재시도만 늘리고 실패를
+  지연시킬 뿐)를 반복하지 않는다.
+- **candidate에 hard cap(예: 1,000건 초과 시 400) 도입** — 기각(결정
+  4). 현재 461건 규모에서 근거가 되는 실측 실패가 없고, ADR-0031이
+  이미 기각한 "mechanical candidate cap"과 같은 recall 손실 위험을
+  다시 끌어들인다.
+- **schema에 `maxItems` 등 JSON Schema 제약 추가로 provider output을
+  강제** — 기각(결정 3). Anthropic API가 이 키워드들을 구조화 출력에서
+  거부한다는 사실을 공식 문서로 확인했다(요청 자체가 400으로 실패).
+- **candidate를 chunk(25~50건)로 나눠 여러 번 ranking 후 merge** —
+  기각(이번 Task 범위, ADR-0031 결정 재확인). chunk 간 절대 척도 비교
+  불가 문제가 여전히 해결되지 않았고, 현재 실패 원인이 output 상한
+  부재/장기 트랜잭션으로 이미 설명되므로 더 큰 구조 변경 없이 먼저
+  해결을 시도하는 것이 우선이다.
+- **validation/malformed 실패뿐 아니라 NETWORK_TIMEOUT/PROVIDER_4XX/
+  PROVIDER_RETRY_EXHAUSTED까지 application-level retry 대상으로 포함**
+  — 기각(결정 5). 이 실패들은 이미 SDK 자체 재시도(최대 2회)를 소진한
+  뒤 도달하므로, 그 위에 추가 재시도를 얹으면 실패 확정까지의 지연만
+  늘어난다(최악의 경우 90초×3(SDK)×2(application) = 540초에 근접).
+- **`JobRecommendationClient` 인터페이스는 그대로 두고
+  `AnthropicJobRecommendationClient` 내부에서만 Entity→DTO 변환** —
+  기각(결정 2). 인터페이스가 Entity를 계속 받으면 Fake
+  구현체(테스트)를 포함한 모든 구현이 Entity를 계속 다뤄야 해
+  트랜잭션 경계가 타입으로 강제되지 않는다 — "실수로 Entity를 다시
+  트랜잭션 밖으로 흘려보내는" 회귀를 컴파일 타임에 막을 수 없다.
+
+**이유**: 이번 결정을 관통하는 원칙은 "외부 API 대기 시간 동안 DB
+connection/transaction을 점유하지 않는다"(ADR-0032가 NOTIFY-001에
+적용한 원칙을 RECOMMEND-001 자신에게도 동일하게 적용) — NOTIFY-001은
+이 문제를 "위에 얹지 않는 것"으로 회피했을 뿐 근본 원인은 그대로
+RECOMMEND-001에 남아 있었다. 둘째, "관련 있는 공고를 후보 단계에서
+놓치지 않는다"(ADR-0026/ADR-0031) — provider output 상한(결정 3)과
+candidate cap 미도입(결정 4) 모두 이 원칙을 그대로 유지한 채 실패율만
+낮추는 방향을 택했다. 셋째, "근거 없이 값을 바꾸지 않는다"(ADR-0027
+선례) — timeout(결정 6)과 candidate cap(결정 4) 모두 실측 증거가
+timeout 값 자체를 가리키지 않는 상황에서 추측성 변경을 하지 않고,
+대신 다음에 근거를 확보할 수 있는 관측 장치(진단 로그, 신규 metric)를
+먼저 놓았다.
+
+**영향**: `JobRecommendationClient` 인터페이스 시그니처 변경은 이
+인터페이스를 구현/mock하는 모든 코드(`AnthropicJobRecommendationClient`,
+테스트의 Fake 구현체)에 영향을 준다 — 단`POST
+/api/jobs/recommendations?limit=N` 공개 API와
+`JobRecommendationService.recommend(int)` 시그니처(NOTIFY-001이
+의존하는 계약)는 그대로이므로 NOTIFY-001 production 코드는 무변경으로
+유지된다. `RecommendationInput`류 record가 이 프로젝트에서 "LLM
+클라이언트 인터페이스가 JPA Entity 대신 immutable snapshot DTO를
+받는" 첫 사례가 되며, 향후 유사하게 무거운 LLM 호출을 감싸는 서비스
+(예: 이후 chunk/batch 재설계)가 이 경계 패턴을 선례로 참고할 수 있다.
+`isRepairable()`/`isValidationFailure()`가 서로 다른 reason 집합을
+반환하는 것이 코드만 보면 헷갈릴 수 있어, 두 메서드 모두 javadoc으로
+목적을 명시해야 한다(구현 시 필수). timeout을 이번에 바꾸지 않기로
+했으므로, `NETWORK_TIMEOUT`이 실제 E2E에서 다시 재현되면 후속 Task가
+이번에 추가한 진단 로그를 근거로 값을 조정하거나 `classify()` 분류
+자체를 세분화해야 한다 — 그 결정을 미리 내리지 않은 것은 의도된
+유예다.

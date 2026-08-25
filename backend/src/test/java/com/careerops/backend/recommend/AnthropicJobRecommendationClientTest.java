@@ -4,16 +4,13 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.anthropic.errors.AnthropicServiceException;
-import com.careerops.backend.career.CareerExperience;
-import com.careerops.backend.career.ExperienceType;
-import com.careerops.backend.job.JobPosting;
+import com.careerops.backend.recommend.dto.*;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
 import java.net.SocketTimeoutException;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -49,11 +46,8 @@ class AnthropicJobRecommendationClientTest {
         String sensitiveJobTitle="SENSITIVE-RECOMMENDATION-JOB-TITLE";
         String sensitivePkbText="SENSITIVE-RECOMMENDATION-PKB-SUMMARY-AND-DETAIL";
         String key="SECRET-RECOMMENDATION-API-KEY";
-        JobPosting job=new JobPosting("Sensitive Company",sensitiveJobTitle,"regular","new","degree",
-                "OPEN","I","IT","Seoul",LocalDate.now(),LocalDate.now().plusDays(1),
-                "MANUAL","url","id");
-        CareerExperience experience=new CareerExperience(ExperienceType.PROJECT,"Sensitive Experience",null,null,
-                null,null,sensitivePkbText,sensitivePkbText);
+        RecommendationInput input=new RecommendationInput(List.of(new RecommendationJobCandidate(1L,"Sensitive Company",sensitiveJobTitle,"IT","new","degree",LocalDate.now())),
+                List.of(new RecommendationExperience(2L,"Sensitive Experience",null,null,sensitivePkbText,List.of())),List.of(),List.of(),List.of());
         Logger root=(Logger)LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
         ListAppender<ILoggingEvent> appender=new ListAppender<>();
         appender.start();
@@ -62,8 +56,7 @@ class AnthropicJobRecommendationClientTest {
             AnthropicJobRecommendationClient client=new AnthropicJobRecommendationClient(
                     new JobRecommendationPromptBuilder(),"","model",10,90);
 
-            assertThatThrownBy(() -> client.recommend(List.of(job),List.of(experience),Map.of(),
-                    List.of(),List.of(),List.of(),5))
+            assertThatThrownBy(() -> client.recommend(input,20))
                     .isInstanceOfSatisfying(JobRecommendationException.class,
                             exception -> assertThat(exception.reason())
                                     .isEqualTo(JobRecommendationException.Reason.PROVIDER_4XX));
