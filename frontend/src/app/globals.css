@@ -79,3 +79,18 @@ h1 {
   font-size: 0.9rem;
   font-weight: 700;
 }
+
+.cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 2rem 0 0;
+  padding: 0.9rem 1.8rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 1rem;
+  font-weight: 700;
+  text-decoration: none;
+}

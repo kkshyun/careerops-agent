@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <main className="landing">
@@ -7,7 +9,9 @@ export default function Home() {
         <p className="subtitle">
           채용 공고를 모으고, 내 경험과 맞는 공고를 추천해주는 서비스
         </p>
-        <p className="status">서비스 준비 중</p>
+        <Link className="cta" href="/dashboard">
+          시작하기
+        </Link>
       </section>
     </main>
   );
