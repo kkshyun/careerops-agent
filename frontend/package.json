@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "test": "node --test src/lib/format.test.ts src/lib/actions/result.test.ts src/lib/career-validation.test.ts",
+    "test": "node --test src/lib/format.test.ts src/lib/actions/result.test.ts src/lib/career-validation.test.ts src/lib/fixtures/ai-insight.test.ts",
     "lint": "eslint ."
   },
   "dependencies": {

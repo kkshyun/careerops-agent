@@ -3671,3 +3671,166 @@ Action을 통해서만 이뤄진다. 향후 실제 multi-user 인증이 도입�
 Server Action 내부에서 세션 검증을 추가하기만 하면 되고(브라우저가
 backend를 직접 호출하는 경로가 아예 없으므로), 이 결정을 뒤집을
 필요는 없을 것으로 예상된다.
+
+---
+
+## ADR-0040: FRONT-003 — AI Insight UI는 항상 fixture(MATCH-002/
+## AGENT-001/AGENT-002 실제 호출 영구 차단), 대표 demo job은 실제
+## `JobPosting` id=7501, 기존 timeline 시각 언어 재사용, form 필드
+## reset은 controlled input으로 해결, attachment key는 backend
+## `sortNo` 비유일성을 인정하고 조합 key로 대체
+
+- 날짜: 2026-08-26
+- 상태: 확정
+- 관련 Task: FRONT-003, FRONT-003.1
+
+**문제**: FRONT-003은 CareerOps의 마지막 제품 개발 Phase다. MATCH-002/
+AGENT-001/AGENT-002는 이미 실제 Anthropic 호출로 검증된 production
+기능이지만(ADR-0028/0029/0030), 이 Phase는 "Anthropic 실제 호출
+0건"이라는 절대 제약 아래 그 결과를 제품 UI로 보여줘야 한다. 순진하게
+"버튼을 누르면 실제로 호출하되 UI만 예쁘게 만든다"는 선택지는 예산
+제약과 정면으로 충돌해 애초에 불가능하고, "몰래 매번 같은 캐시된
+실제 응답을 재사용한다"는 선택지는 실제로는 1회성 호출이라도
+과금이 재발생하거나(재요청 시) AGENTS.md의 근거 기반 투명성 원칙과
+충돌한다(사용자가 "지금 이 공고에 대해 AI가 방금 판단했다"고 오인할
+위험). 동시에 FRONT-002.2 리뷰가 이미 발견해둔 두 UX 결함(폼 필드
+reset, attachment key 중복 경고)도 이번이 마지막으로 정리할 기회다.
+
+**결정**:
+
+1. **MATCH-002/AGENT-001/AGENT-002는 frontend 코드 경로 어디에도 실제
+   호출을 만들지 않는다 — `apiBaseUrl` 유무와 무관하게 항상 fixture만
+   반환한다.** 기존 MATCH-001(`getJobMatch`)의 "backend 있으면 실호출,
+   없으면 fixture" 분기 패턴을 그대로 재사용하지 않는다. 이 3개 기능의
+   frontend 함수는애초에 `apiBaseUrl` 분기 자체를 갖지 않는다(코드에
+   조건문이 없으므로 실수로 실제 호출 경로가 살아날 여지가 구조적으로
+   없다). 이는 FRONT-001/FRONT-002가 이미 확립한 "6개 금지 endpoint"
+   grep 검증(`.ai/tasks/FRONT-001.md`/`FRONT-002.md` Acceptance
+   Criteria)을 FRONT-003 이후에도 그대로 통과시킨다.
+2. **대표 demo job은 실제 backend의 `JobPosting` id=7501(한전KDN
+   "AI기반 무정전활선작업 무인화 로봇플랫폼 개발 및 실증" 연구과제,
+   OPEN, careerLevel=신입+경력)로 확정한다.** 이 공고는 ADR-0028
+   (VALIDATE-001)이 MATCH-002 도입 근거로 직접 인용한 실제 사례이며,
+   오늘 이 조사 시점에 실제로 `GET /api/jobs/7501/match`를 호출해
+   재확인한 결과도 `overallScore=0.0`(정보통신이라는 광범위 직군
+   라벨과 PKB 태그가 문자열 수준에서 겹치지 않음)으로 ADR-0028의
+   서술과 일치한다. **AI Insight 흐름은 이 0.0을 감추지 않고 그대로
+   "기본 적합도(실시간 계산)"로 보여준 뒤, "AI 심층 분석(데모
+   분석)"이 실제로 무엇을 더 찾아내는지 대비시키는 것을 의도적인
+   내러티브로 채택한다** — 이는 이 프로젝트가 MATCH-002를 만든 실제
+   이유(ADR-0028)를 사용자에게 그대로 정직하게 보여주는 것이며,
+   "점수가 낮으면 나쁜 데모"라는 통념보다 "정직한 근거 기반 제품"이라는
+   AGENTS.md 원칙에 부합한다고 판단했다. Vercel fixture-only 배포
+   환경(backend 없음)에는 실제 job id가 없으므로, 기존 fixture
+   공고 중 주제가 가장 가까운 `job-orbit-01`("데이터 플랫폼 신입
+   엔지니어")에도 **동일한 fixture 콘텐츠**를 매핑한다 — fixture
+   본문은 특정 회사/공고명을 직접 인용하지 않고 "이 공고"처럼 일반화된
+   표현만 쓰도록 작성해, 두 서로 다른 공고 타이틀 아래에서도 자연스럽게
+   읽히게 한다.
+3. **fixture 내용은 실제 dev DB의 승인 PKB(경험 6건: 코테이토 백엔드
+   활동/서울대 IMSI Lab 인턴/엔코아 백엔드 부트캠프/LG Aimers AI
+   과정/계층적 다중 에이전트 RAG 연구/FinSight, 태그 Java·Spring
+   Boot·AI·RAG·Redis·Prometheus·Grafana·Loki 등, 오늘 시점 실제
+   `GET /api/jobs/7501/match` 실측)에서 구조와 소재(비동기 처리 분리,
+   상태 머신 기반 재처리, 분산 락, 모니터링/알림 연동, RAG 연구 경험
+   등 구체적 키워드)만 가져오되, 학교명(서울대/숭실대/세화여고)처럼
+   식별 가능한 고유명사는 쓰지 않는다 — 기존
+   `frontend/src/lib/fixtures/data.ts`가 이미 확립한 "가상"
+   네이밍(가상대학교 등) 컨벤션을 그대로 따라 비식별화한다. 이는
+   AGENT-002 fixture 요구사항("실제 사용자 개인정보 없음")과
+   AGENTS.md의 "존재하지 않는 경험을 만들지 않는다"는 원칙을 fixture
+   설계에도 일관되게 적용한 것이다 — "완전히 지어낸 이야기"가 아니라
+   "실제로 검증됐던 근거 패턴을 비식별화해 재사용"하는 것이 목표다.
+4. **레이아웃은 새 컴포넌트 패턴을 발명하지 않고, ADR-0038의 signature
+   element("Status Rail"의 timeline 변형, `App.module.css`의 기존
+   `.timeline` — 왼쪽 세로선 + 원형 점)를 그대로 재사용해 4단계
+   파이프라인(기본 적합도 → AI 심층 분석 → 지원 전략 분석 → 자기소개서
+   초안)으로 구성한다.** 이 timeline은 이미 `StageEditor`(전형 단계)가
+   같은 형태로 쓰고 있어 "채용 파이프라인을 다루는 운영 데스크"라는
+   ADR-0038의 concept과 시각적으로 정확히 같은 언어를 공유한다. 각
+   단계 제목 옆에는 "실시간 계산"(1단계) 또는 "데모 분석"(2~4단계)
+   text 라벨 + `title` 속성 tooltip만 붙이고, 별도 배너/모달/경고
+   컴포넌트를 새로 만들지 않는다. `frontend-design` skill은 이 머신에
+   설치되어 있지 않음을 확인했으므로(전역 검색 결과 0건), ADR-0038이
+   Claude가 그 skill의 지침을 이미 한 차례 직접 적용해 남긴 결과물을
+   그대로 계승하는 것으로 대체한다(같은 caveat이 반복 발견되면 재검토).
+5. **4단계 사이에 인위적인 잠금(순서대로만 열람 가능)을 두지 않는다.**
+   모든 데모 콘텐츠는 즉시 열람 가능하고, "결과 보기" 클릭은 순수
+   UI 토글이다(실제 계산 지연을 흉내내는 로딩 애니메이션을 만들지
+   않는다) — 존재하지 않는 "AI가 생각 중"이라는 연출은 이 제품이
+   피하려는 "generic AI SaaS" 패턴의 전형이라고 판단했다.
+6. **CareerEditor/StageEditor/ApplicationEditor의 form reset 버그는
+   controlled input 전환으로 해결하고, `<form action={...}>` 패턴
+   자체는 유지한다.** 코드 조사 결과 이 버그는 React 19가 `action` prop에
+   함수를 전달한 `<form>`을 액션 완료 후(성공/실패 무관, 심지어
+   서버로의 실제 요청이 발생하지 않고 클라이언트 조기 반환만 있어도)
+   **uncontrolled 필드만** 자동으로 reset하는 표준 동작이기 때문임을
+   확인했다(React 19 공식 동작 — controlled input에는 영향이 없다).
+   대안으로 검토한 "action prop을 버리고 `onSubmit`+`preventDefault`로
+   전환"은 기각한다 — `SubmitButton`(`components/form.tsx`)이
+   `useFormStatus()`로 pending 상태를 읽는 것은 `<form action=...>`
+   패턴에 의존하므로, onSubmit으로 바꾸면 모든 호출부에서 pending
+   표시를 수동 상태로 다시 구현해야 해 변경 범위가 오히려 커진다.
+   controlled input(각 필드를 `useState`로 관리하고 `defaultValue`
+   대신 `value`+`onChange` 전달)은 `action` prop과 `useFormStatus`를
+   그대로 유지하면서 자동 reset 대상에서 제외되므로, 가장 적은 변경으로
+   Server Action 아키텍처(ADR-0039)를 전혀 건드리지 않고 해결한다.
+7. **첨부파일 목록의 React key는 `sortNo` 단독 대신 `sortNo`+`fileName`+
+   `url`(+index를 마지막 안전망으로만) 조합으로 바꾼다.** `sortNo`는
+   ALIO가 제공하는 "표시 순서" 힌트일 뿐 유일성이 보장되지 않는다는
+   것을 코드로 직접 확인했다 — `AttachmentResponse`/
+   `RecruitmentStepResponse`는 JOB-003 결정(ADR 없음, Task 명세 기재)에
+   따라 애초에 ALIO 자연키(`recrutAtchFileNo`)나 엔티티 PK를 노출하지
+   않고, 유일성 제약은 오직 `recrutAtchFileNo`(전역 UNIQUE)에만
+   걸려 있다. 심지어 `JobPostingControllerTest
+   .getsRecruitmentStepsAndAttachmentsWithPublicFieldsInStableOrder`가
+   `sortNo=1`로 동일한 서로 다른 두 `Attachment`(`recrutAtchFileNo`
+   8001/8002)를 의도적으로 고정 fixture로 써서 "동일 sortNo는 실제로
+   발생할 수 있는 정상 데이터"임을 이미 스스로 증명해뒀다. 로컬 dev DB
+   전수 조사 결과 현재 `attachments`에는 중복 sortNo가 0건이지만(오늘
+   시점 데이터 스냅샷일 뿐), `recruitment_steps`에는 5,403개
+   `JobPosting`에서 실제로 동일 `(job_posting_id, sort_no)` 중복이
+   존재함을 실측했다 — 두 응답 모두 같은 설계(별도 유일 식별자 미노출)를
+   공유하므로 같은 위험군이다. 이번 Task는 사용자가 지정한 attachment
+   목록만 고친다(steps 목록도 구조적으로 같은 위험이 있다는 사실만
+   기록해두고, 실제 경고가 재현되지 않는 한 이번 범위에 넣지 않는다).
+
+**대안**:
+- **fixture 대신 "1회만 실제로 호출해 응답을 캐시해서 보여주기"** —
+  기각. 재요청/재배포마다 다시 실제 호출을 트리거할 위험이 구조적으로
+  남고, "방금 계산됐다"는 착각을 줄 수 있어 근거 기반 투명성 원칙과
+  충돌한다.
+- **가상의 완전 신규 공고를 demo job으로 새로 정의** — 기각(부분).
+  실제 존재하는 공고와 실제로 검증됐던 PKB 매칭 이력을 재사용하는
+  쪽이 "지어낸 데모"보다 신뢰도가 높고, ADR-0028의 실제 서사를 그대로
+  이어갈 수 있다. 다만 fixture-only(Vercel) 배포를 위해 fixture 전용
+  공고 하나(`job-orbit-01`)에도 병행 매핑하는 절충안을 택했다.
+- **낮은 MATCH-001 점수(0.0)를 감추고 fixture 전용 공고에는 임의로
+  더 보기 좋은 deterministic 점수를 부여** — 기각. 실제 backend가
+  실시간 계산하는 값을 UI가 선택적으로 감추면, "실시간 계산"이라는
+  라벨 자체가 거짓이 된다.
+- **`onSubmit`+`preventDefault`로 전환해 React의 자동 reset을 원천
+  차단** — 기각. 위 결정 6 이유(pending UI 재구현 비용).
+- **`ExperienceCard`/`ItemShell`을 항상 `key={item.id}-${editing}"`처럼
+  강제 remount시켜 매 실패마다 폼을 완전히 새로 그리기** — 기각.
+  remount는 값을 초기 `item` 상태로 되돌릴 뿐, 사용자가 방금 입력한
+  값을 보존하지 못해 원래 문제(재입력 비용)를 전혀 해결하지 못한다.
+- **attachment 응답에 `id` 또는 `recrutAtchFileNo`를 새로 노출하도록
+  backend 수정** — 기각(이번 Phase 원칙: frontend-only). JOB-003이
+  이미 명시적으로 내부 식별값 비노출을 결정했고, frontend만으로 충분히
+  해결 가능한 문제에 backend 변경을 쓸 이유가 없다.
+
+**이유**: 이 Phase 전체를 관통하는 원칙은 "실제로 일어나지 않은 일을
+일어난 것처럼 보이지 않게 한다"이다 — AI Insight는 데모임을 숨기지
+않고, MATCH-001의 낮은 점수도 숨기지 않으며, 폼 reset/key 경고 수정도
+기존 아키텍처(Server Action, JOB-003의 비식별 응답 설계)를 뒤집지
+않고 frontend 표현 계층에서만 정직하게 해결한다.
+
+**영향**: `frontend/src/lib/fixtures/ai-insight.ts`(신규)가 이 Phase
+이후 유일한 MATCH-002/AGENT-001/AGENT-002 데이터 소스가 된다 — 실제
+backend가 이 3개 API의 계약을 바꾸면(향후 Phase) fixture도 수동으로
+갱신해야 하며, 이를 자동으로 감지하는 계약 테스트는 이번 범위에
+포함하지 않는다. demo job(7501)이 향후 재수집으로 status가 CLOSED로
+바뀌거나 삭제되어도 fixture 자체(문자열 콘텐츠)는 영향받지 않지만,
+"기본 적합도" 단계의 실시간 계산 결과(특히 `status`/마감일 표시)는
+바뀔 수 있다는 점을 후속 관찰 대상으로 남긴다.

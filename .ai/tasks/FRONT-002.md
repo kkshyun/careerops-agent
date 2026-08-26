@@ -499,3 +499,15 @@ export type ActionResult<T = undefined> =
 | round | 요청 요약 | 결과 요약 |
 |---|---|---|
 | 1 | Server Action 인프라(ActionResult/ApiError/mutation helper), 최소 form primitive, 공용 ConfirmDialog, `/jobs/[id]` 사전확인 UX, `/applications/[id]` 상태/메모/지원일 수정+삭제 구현 | 16개 파일 신규/수정. Codex 샌드박스에서 Docker 소켓 접근 승인 거절 + Next 서버 포트 바인딩 EPERM으로 실제 backend E2E 미수행(코드 자체는 npm test 6/6, build/lint 통과 자체 보고). Claude가 직접 실제 backend+claude-in-chrome으로 전체 E2E(생성→사전확인 전환→상태변경→새로고침 유지→메모/지원일 저장→OFFERED confirm 5항목 전부 수동 확인→삭제→DB cleanup 확인) 및 fixture 데모 모드(불변+안내 배너) 수행. reviewer round1 PASS, 수정 요청 없음(비차단 발견 2건만 기록: 에러 body best-effort 노출 미구현이지만 더 안전한 선택, 상태변경 실패 시 ConfirmDialog가 delete와 다르게 throw 없이 닫힘 — 둘 다 AC 위반 아님). |
+
+## Follow-up / FRONT-003 후보
+
+아래 항목은 FRONT-002(및 FRONT-002.1/FRONT-002.2) 진행 중 발견된 개선/정리
+후보다. **FRONT-003의 확정 범위가 아니라 backlog 후보일 뿐**이며, FRONT-003
+착수 시 이 중 실제로 다룰 항목만 해당 Task 문서로 옮겨 명세화한다.
+
+- validation 실패 시 form field 값이 reset되는 UX 개선
+- `/jobs/[id]` attachment key 중복 console warning 제거
+- `appliedAt` null 복원은 backend 제약으로 현재 known limitation 유지
+- Stage drag/reorder는 현재 scope 밖으로 유지
+- bullets/tags 반복 입력 UI는 FRONT-003에서 필요성 재평가
