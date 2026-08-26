@@ -254,9 +254,10 @@ CareerOps는 AI 호출을 "그냥 호출하고 끝"으로 두지 않고, 비용�
   provider 자체 오류는 재시도하지 않습니다.
 - **명시적 timeout** — 기능별로 45초(의미 매칭)~150초(자기소개서 초안) 사이의
   고정 timeout이 설정돼 있습니다.
-- **현재 데모는 비용 방지를 위해 fixture 사용** — 아래 [현재 데모 정책](#현재-데모-정책)
-  참고. "완전 무료"가 아니라 "이번 배포에서는 저장된 예시 결과를 보여준다"는
-  의미입니다. 개발 과정에서는 실제 Claude API를 호출해 각 기능을 검증했습니다.
+- **현재 데모는 비용 방지를 위해 fixture 사용** — 공개 배포 환경에서는 AI 심층
+  분석/지원 전략/자기소개서 초안이 저장된 예시 결과로 표시됩니다. "완전 무료"가
+  아니라 "이번 배포에서는 저장된 예시 결과를 보여준다"는 의미이며, 개발 과정에서는
+  실제 Claude API를 호출해 각 기능을 검증했습니다.
 
 ## Kakao 실제 E2E
 
@@ -273,8 +274,7 @@ CareerOps는 AI 호출을 "그냥 호출하고 끝"으로 두지 않고, 비용�
 
 실제 계정으로 이 흐름 전체를 끝까지 실행해, DB에 `SENT` 상태로 영속화된 발송
 이력을 확인했습니다. README나 저장소 어디에도 REST API Key, Client Secret,
-refresh token 같은 실제 값은 포함하지 않습니다 — 로컬 실행 시 필요한 환경변수
-**이름**만 아래에서 안내합니다.
+refresh token 같은 실제 값은 포함하지 않습니다.
 
 ## 주요 API / 사용자 흐름
 
@@ -308,69 +308,3 @@ Frontend route는 `/dashboard`, `/jobs`, `/jobs/[id]`, `/applications`,
   지원 등록, 전형 관리, Career CRUD, AI 인사이트 표시까지)을 수동으로 검증했습니다.
 - 구현 이후에는 별도 검토자가 Acceptance Criteria 대비 결과를 독립적으로
   재검증하는 리뷰 절차를 거쳤습니다.
-
-## 로컬 실행
-
-```bash
-# 1. 환경변수 준비 (실제 값은 직접 채워 넣습니다)
-cp .env.example .env
-cp frontend/.env.local.example frontend/.env.local
-
-# 2. PostgreSQL / Redis
-docker compose up -d
-
-# 3. Backend
-cd backend
-./gradlew bootRun
-
-# 4. Frontend (다른 터미널)
-cd frontend
-npm install
-npm run dev
-```
-
-Backend에 필요한 환경변수 이름(값은 각자 준비):
-
-```
-POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD
-SPRING_DATASOURCE_URL
-REDIS_HOST / REDIS_PORT
-JOB_ALIO_API_KEY
-CAREEROPS_ANTHROPIC_API_KEY
-CAREEROPS_KAKAO_REST_API_KEY / CAREEROPS_KAKAO_CLIENT_SECRET / CAREEROPS_KAKAO_INITIAL_REFRESH_TOKEN
-```
-
-Frontend는 `API_BASE_URL`(서버 전용, 브라우저에 노출되지 않음) 하나만 설정하면
-로컬 Backend와 연결됩니다. 설정하지 않으면 fixture(데모) 모드로 동작합니다.
-더 자세한 배포/환경 설정은 [`frontend/README.md`](frontend/README.md)를
-참고하세요.
-
-## 현재 데모 정책
-
-공개 배포된 Frontend는 Backend가 함께 배포되어 있지 않은 경우 fixture
-기반으로 동작합니다.
-
-- `API_BASE_URL`이 설정되지 않으면 Application/Career 등록·수정·삭제 버튼을
-  눌러도 실제로 저장되지 않고, "데모 데이터에서는 저장되지 않습니다"라는
-  안내만 표시됩니다. 실제 Backend에 연결하면 그대로 DB에 저장됩니다.
-- AI 인사이트 화면에서 **기본 적합도(MATCH-001)만 실시간으로 계산**됩니다.
-  **AI 심층 분석/지원 전략/자기소개서 초안은 저장된 예시 결과(fixture)** 이며,
-  화면에 "데모 분석"이라는 라벨과 함께 표시됩니다. 이 정책은 외부 API 비용
-  발생을 막기 위한 것으로, 개발 과정에서는 각 기능을 실제 Claude API 호출로
-  검증했습니다.
-- 자동화 스케줄러(추천 준비/카카오 발송)는 기본적으로 비활성 상태입니다.
-
-## 향후 확장 가능성
-
-- **다중 인스턴스 확장** — 현재는 단일 인스턴스 전제로 설계되어 있습니다.
-  여러 인스턴스로 확장하려면 스케줄러 분산 락 등 재설계가 필요합니다.
-- **PKB import 동시성 보강** — 문서 업로드 배치 완료와 후보 생성이 동시에
-  일어나는 경계 케이스에서 간헐적으로 재현되는 결함이 남아 있어 별도로
-  다룰 예정입니다.
-- **과거 공고 히스토리 백필** — 현재 자동 수집은 최근 일부 공고만 주기적으로
-  훑습니다. 오래된 공고까지 전체를 보강하려면 별도의 1회성 배치가 필요합니다.
-- **조회/필터링 확장** — 고용형태·학력요건·게시일 범위 등 현재 의도적으로
-  제외한 필터는 실사용에서 필요성이 확인되면 추가할 수 있습니다.
-- **Career 항목의 반복 입력 UI** — 경험의 세부 항목(bullet)/태그는 현재
-  텍스트 입력을 파싱하는 최소 구현입니다. 필요성이 커지면 전용 편집 UI로
-  확장할 수 있습니다.
