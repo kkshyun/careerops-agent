@@ -162,6 +162,55 @@ class JobApplicationControllerTest {
     }
 
     @Test
+    void filtersApplicationsByJobPostingId() throws Exception {
+        JobPosting matchingPosting = savePosting("기관1", "공고1", "MANUAL", "OPEN");
+        JobApplication matching = saveApplication(matchingPosting, ApplicationStatus.INTERESTED, null);
+        saveApplication(savePosting("기관2", "공고2", "MANUAL", "OPEN"),
+                ApplicationStatus.INTERESTED, null);
+
+        mockMvc.perform(get("/api/applications").param("jobPostingId", matchingPosting.getId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].id").value(matching.getId()))
+                .andExpect(jsonPath("$.content[0].jobPostingId").value(matchingPosting.getId()))
+                .andExpect(jsonPath("$.totalElements").value(1));
+    }
+
+    @Test
+    void combinesJobPostingIdAndStatusFilters() throws Exception {
+        JobPosting submittedPosting = savePosting("기관1", "공고1", "MANUAL", "OPEN");
+        JobApplication matching = saveApplication(submittedPosting, ApplicationStatus.SUBMITTED, null);
+        JobPosting plannedPosting = savePosting("기관2", "공고2", "MANUAL", "OPEN");
+        saveApplication(plannedPosting, ApplicationStatus.PLANNED, null);
+
+        mockMvc.perform(get("/api/applications")
+                        .param("jobPostingId", submittedPosting.getId().toString())
+                        .param("status", "SUBMITTED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].id").value(matching.getId()))
+                .andExpect(jsonPath("$.totalElements").value(1));
+
+        mockMvc.perform(get("/api/applications")
+                        .param("jobPostingId", plannedPosting.getId().toString())
+                        .param("status", "SUBMITTED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").isEmpty())
+                .andExpect(jsonPath("$.totalElements").value(0));
+    }
+
+    @Test
+    void returnsEmptyListForUnknownJobPostingId() throws Exception {
+        saveApplication(savePosting("기관", "공고", "MANUAL", "OPEN"),
+                ApplicationStatus.INTERESTED, null);
+
+        mockMvc.perform(get("/api/applications").param("jobPostingId", Long.toString(Long.MAX_VALUE)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").isEmpty())
+                .andExpect(jsonPath("$.totalElements").value(0));
+    }
+
+    @Test
     void usesDefaultPaginationAndClampsPageSize() throws Exception {
         for (int index = 0; index < 101; index++) {
             saveApplication(savePosting("기관" + index, "공고", "MANUAL", "OPEN"),

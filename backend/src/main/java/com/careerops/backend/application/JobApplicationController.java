@@ -44,8 +44,9 @@ public class JobApplicationController {
     @GetMapping
     public JobApplicationListResponse search(
             @RequestParam(required = false) ApplicationStatus status,
+            @RequestParam(required = false) Long jobPostingId,
             @PageableDefault(size = 20) Pageable pageable) {
-        return service.search(status, pageable);
+        return service.search(status, jobPostingId, pageable);
     }
 
     @PatchMapping("/{id}")

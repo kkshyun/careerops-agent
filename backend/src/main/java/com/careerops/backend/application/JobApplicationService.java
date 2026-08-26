@@ -56,10 +56,10 @@ public class JobApplicationService {
         return JobApplicationDetailResponse.from(application, stages);
     }
 
-    public JobApplicationListResponse search(ApplicationStatus status, Pageable pageable) {
+    public JobApplicationListResponse search(ApplicationStatus status, Long jobPostingId, Pageable pageable) {
         int clampedSize = Math.min(pageable.getPageSize(), 100);
         PageRequest pageRequest = PageRequest.of(pageable.getPageNumber(), clampedSize);
-        return JobApplicationListResponse.from(repository.search(status, pageRequest));
+        return JobApplicationListResponse.from(repository.search(status, jobPostingId, pageRequest));
     }
 
     public JobApplicationResponse update(Long id, JobApplicationUpdateRequest request) {

@@ -17,9 +17,13 @@ public interface JobApplicationRepository extends JpaRepository<JobApplication, 
                 p.id, p.companyName, p.title, p.applicationEndAt, p.status)
             FROM JobApplication a JOIN a.jobPosting p
             WHERE (:status IS NULL OR a.status = :status)
+              AND (:jobPostingId IS NULL OR p.id = :jobPostingId)
             ORDER BY a.updatedAt DESC
             """)
-    Page<JobApplicationResponse> search(@Param("status") ApplicationStatus status, Pageable pageable);
+    Page<JobApplicationResponse> search(
+            @Param("status") ApplicationStatus status,
+            @Param("jobPostingId") Long jobPostingId,
+            Pageable pageable);
 
     @Query("""
             SELECT new com.careerops.backend.application.dto.JobApplicationResponse(

@@ -3591,3 +3591,83 @@ signature element 1개, 그리고 "웜 크림+세리프"/"거의 검정+네온 a
 ADR-0037의 토큰 *이름* 목록에 실제 hex 값과 사용 규칙을 채워 넣은
 것이다. FRONT-002 이후 새 화면을 추가할 때도 이 팔레트/타이포/rail
 규칙을 기본값으로 따르고, 크게 벗어날 필요가 생기면 새 ADR로 갱신한다.
+
+---
+
+## ADR-0039: FRONT-002 쓰기(mutation) 아키텍처 — Next.js Server
+## Actions, CORS/proxy/backend 변경 없음
+
+- 날짜: 2026-08-26
+- 상태: 확정 (2026-08-26, 사용자 승인)
+- 관련 Task: FRONT-002, FRONT-002.1, FRONT-002.2
+
+**문제**: ADR-0036 결정 6이 FRONT-002로 미뤄둔 질문 — "브라우저에서
+트리거되는 쓰기(POST/PATCH/DELETE)를 CORS 설정 없이 어떻게
+구현하는가"에 답해야 한다. ADR-0036이 제시했던 두 후보는 (a) backend에
+`CorsConfig`를 추가해 브라우저가 `localhost:8080`을 직접 호출하게
+하거나, (b) Next.js `rewrites()`/Route Handler로 same-origin 프록시를
+새로 만드는 것이었다. 코드로 재확인한 결과 여전히 `CorsConfig`/
+`@CrossOrigin`/`addCorsMappings`는 0건, Spring Security도 없다(변화
+없음).
+
+**결정**: **Next.js Server Actions**(`"use server"` 함수, App Router
+내장 기능)로 모든 쓰기를 구현한다. FRONT-001의 `jobs/[id]/actions.ts`
+(`requestMatch`)가 이미 이 패턴을 1개 함수로 선례를 만들어뒀다 — 이번
+Task는 그 패턴을 `frontend/src/lib/actions/`로 확장해 재사용 가능한
+위치로 옮기고 본격적으로 쓴다.
+
+Server Action은 브라우저가 아니라 **Next.js가 실행하는 Node.js
+서버 프로세스**에서 실행된다(Server Component의 데이터 fetch와 동일
+런타임). 즉 브라우저가 `POST /api/applications`를 직접 호출하는 게
+아니라, 브라우저 → (Next.js 내부 RPC, same-origin) → Next.js
+서버 프로세스 → (서버-서버 호출, CORS 적용 대상 아님) → Spring
+Backend 순서로 흐른다. ADR-0036과 완전히 같은 논리("CORS가 적용되는
+당사자를 애초에 만들지 않는다")를 읽기에서 쓰기로 그대로 확장하는
+것이며, (a) backend CORS 추가도 (b) 별도 프록시 계층 신설도 필요
+없다.
+
+1. `frontend/src/lib/actions/{applications,application-stages,career}.ts`
+   각각의 최상단에 `"use server"`를 선언하고, 그 안의 exported
+   함수만 Server Action이 된다(파일 전체가 서버 전용 번들로
+   분리되어 클라이언트 JS에 포함되지 않음).
+2. Action은 `lib/api/*.ts`에 추가하는 `postJson`/`patchJson`/`delete`
+   류 헬퍼(기존 `getJson`과 동일한 `apiBaseUrl` 분기 재사용)를
+   호출한다 — API 호출 로직 자체는 읽기와 동일한 파일에 그대로
+   추가한다(Adapter/Repository 같은 새 계층 신설 없음).
+3. `NEXT_PUBLIC_API_BASE_URL`은 여전히 도입하지 않는다. 서버 전용
+   `API_BASE_URL` 하나로 읽기/쓰기 모두를 통제한다(ADR-0036 결정 3과
+   동일 원칙 유지).
+4. `API_BASE_URL`이 비어 있는 데모(fixture) 모드에서는 Server
+   Action이 실제 backend를 호출하지 않고 즉시
+   `{ok:false, kind:"demo", message:"데모 데이터에서는 저장되지
+   않습니다"}` 같은 값을 반환한다 — fixture 배열을 메모리에서 수정해
+   "저장된 것처럼" 보여주는 가짜 영속성은 만들지 않는다(AGENTS.md
+   근거 기반 원칙과 같은 방향 — 실제로 저장되지 않은 것을 저장된 척
+   하지 않는다).
+
+**대안**:
+- **backend에 `CorsConfig` 추가** — 기각. Server Action만으로 모든
+  쓰기 시나리오를 구현할 수 있어 당장 필요하지 않고, backend에
+  인증이 없는 상태에서 브라우저의 직접 호출 경로까지 열면 향후
+  인증 도입 전까지 공격 표면이 넓어진다.
+- **Next.js Route Handler(`app/api/.../route.ts`) 프록시** — 기각.
+  Server Action은 이미 "브라우저에서 안전하게 호출 가능한 서버
+  함수"라는 동일한 역할을 추가 라우트 파일/URL 설계 없이 제공한다
+  (React 19/Next 16 내장 기능이라 신규 dependency도 없음). 프록시를
+  추가하면 각 mutation마다 URL 설계 + Route Handler 파일이 늘어나는
+  불필요한 계층이 생긴다.
+- **client에서 직접 backend 호출 + 인증/CORS 전체 재설계를 먼저 진행** —
+  기각. 이 프로젝트는 아직 단일 사용자 MVP로 인증 자체가 없다
+  (`docs/ROADMAP.md`). 인증 도입은 별도로 큰 결정이라 FRONT-002
+  범위에서 앞당기지 않는다.
+
+**이유**: ADR-0036과 동일한 원칙("CORS가 적용되지 않는 경로를 택해
+문제 자체를 없앤다")을 쓰기까지 확장하면서, 신규 URL 계층/신규
+dependency 없이 기존 FRONT-001 선례(`requestMatch`)를 그대로 일반화할
+수 있다.
+
+**영향**: FRONT-002 이후 모든 backend 쓰기는 `lib/actions/`의 Server
+Action을 통해서만 이뤄진다. 향후 실제 multi-user 인증이 도입되면
+Server Action 내부에서 세션 검증을 추가하기만 하면 되고(브라우저가
+backend를 직접 호출하는 경로가 아예 없으므로), 이 결정을 뒤집을
+필요는 없을 것으로 예상된다.

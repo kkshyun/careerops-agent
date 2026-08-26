@@ -66,7 +66,7 @@ class JobApplicationRepositoryTest {
                 savePosting("기관3", "공고3", "OPEN"), ApplicationStatus.PLANNED, null, null));
 
         Page<JobApplicationResponse> result = repository.search(
-                ApplicationStatus.SUBMITTED, PageRequest.of(0, 20));
+                ApplicationStatus.SUBMITTED, null, PageRequest.of(0, 20));
 
         assertThat(result.getContent()).extracting(JobApplicationResponse::id)
                 .containsExactly(newer.getId(), older.getId());
@@ -80,13 +80,59 @@ class JobApplicationRepositoryTest {
         }
         repository.flush();
 
-        Page<JobApplicationResponse> firstPage = repository.search(null, PageRequest.of(0, 20));
-        Page<JobApplicationResponse> secondPage = repository.search(null, PageRequest.of(1, 20));
+        Page<JobApplicationResponse> firstPage = repository.search(null, null, PageRequest.of(0, 20));
+        Page<JobApplicationResponse> secondPage = repository.search(null, null, PageRequest.of(1, 20));
 
         assertThat(firstPage.getContent()).hasSize(20);
         assertThat(firstPage.getTotalElements()).isEqualTo(21);
         assertThat(firstPage.getTotalPages()).isEqualTo(2);
         assertThat(secondPage.getContent()).hasSize(1);
+    }
+
+    @Test
+    void filtersByJobPostingId() {
+        JobPosting matchingPosting = savePosting("기관1", "공고1", "OPEN");
+        JobApplication matching = repository.saveAndFlush(new JobApplication(
+                matchingPosting, ApplicationStatus.INTERESTED, null, null));
+        repository.saveAndFlush(new JobApplication(
+                savePosting("기관2", "공고2", "OPEN"), ApplicationStatus.INTERESTED, null, null));
+
+        Page<JobApplicationResponse> result = repository.search(
+                null, matchingPosting.getId(), PageRequest.of(0, 20));
+
+        assertThat(result.getContent()).extracting(JobApplicationResponse::id)
+                .containsExactly(matching.getId());
+    }
+
+    @Test
+    void combinesJobPostingIdAndStatusWithAndCondition() {
+        JobPosting submittedPosting = savePosting("기관1", "공고1", "OPEN");
+        JobApplication matching = repository.saveAndFlush(new JobApplication(
+                submittedPosting, ApplicationStatus.SUBMITTED, null, null));
+        JobPosting plannedPosting = savePosting("기관2", "공고2", "OPEN");
+        repository.saveAndFlush(new JobApplication(
+                plannedPosting, ApplicationStatus.PLANNED, null, null));
+
+        Page<JobApplicationResponse> matchingResult = repository.search(
+                ApplicationStatus.SUBMITTED, submittedPosting.getId(), PageRequest.of(0, 20));
+        Page<JobApplicationResponse> statusMismatchResult = repository.search(
+                ApplicationStatus.SUBMITTED, plannedPosting.getId(), PageRequest.of(0, 20));
+
+        assertThat(matchingResult.getContent()).extracting(JobApplicationResponse::id)
+                .containsExactly(matching.getId());
+        assertThat(statusMismatchResult).isEmpty();
+    }
+
+    @Test
+    void returnsEmptyPageForUnknownJobPostingId() {
+        repository.saveAndFlush(new JobApplication(
+                savePosting("기관", "공고", "OPEN"), ApplicationStatus.INTERESTED, null, null));
+
+        Page<JobApplicationResponse> result = repository.search(
+                null, Long.MAX_VALUE, PageRequest.of(0, 20));
+
+        assertThat(result).isEmpty();
+        assertThat(result.getTotalElements()).isZero();
     }
 
     private JobPosting savePosting(String companyName, String title, String status) {

@@ -1,0 +1,2 @@
+export const validateDateOrder=(start?:string,end?:string):string|undefined=>start&&end&&end<start?"종료일은 시작일보다 빠를 수 없습니다.":undefined;
+export const validateGpaPair=(gpa?:number,gpaScale?:number):string|undefined=>{if((gpa===undefined)!==(gpaScale===undefined))return "GPA와 만점을 모두 입력해주세요.";if(gpa===undefined||gpaScale===undefined)return undefined;if(!Number.isFinite(gpa)||!Number.isFinite(gpaScale)||gpa<0||gpaScale<=0||gpa>gpaScale)return "GPA는 0 이상, 만점 이하이며 만점은 0보다 커야 합니다.";return undefined};
